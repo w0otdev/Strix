@@ -2,7 +2,7 @@
 
 Neo-Matrix is a Python 3.10+ obfuscator that turns a readable script into a deeply obfuscated, self-protecting blob. It hides your code behind random keys, scrambled control flow, and an encrypted payload that refuses to run if the file is tampered with.
 
-> Author: https://6cxl.lol — Repo: github.com/ktn1703/Neo
+> Author: https://phandong.lol — Repo: github.com/ktn1703/Neo
 
 ---
 
