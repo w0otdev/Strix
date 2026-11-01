@@ -195,6 +195,11 @@ class StrixApp:
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self._poll_handle = self.root.after(80, self._poll)
         install_native_caption(self.root)
+        self.root.deiconify()
+        self.root.lift()
+        self.root.attributes("-topmost", True)
+        self.root.after(200, lambda: self.root.attributes("-topmost", False))
+        self.root.focus_force()
         if initial_file:
             self.source.set(str(initial_file))
             self.load_source(reset_output=not output)
@@ -285,7 +290,7 @@ class StrixApp:
         if asset.is_file():
             self.logo = tk.PhotoImage(file=str(asset))
             self.logo_small = self.logo.subsample(
-                max(1, (self.logo.width() + 153) // 154)
+                max(1, ( max(self.logo.width(), self.logo.height()) + 55) // 56)
             )
             tk.Label(
                 toolbar, image=self.logo_small, bg=PALETTE["background"], borderwidth=0
