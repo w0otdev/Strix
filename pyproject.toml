@@ -1,0 +1,20 @@
+[tool.ruff]
+target-version = "py310"
+# Generated output declares globals dynamically and is bound to its exact bytes.
+extend-exclude = ["example/neo-sample.py", "strix-*.py", "neo-*.py"]
+force-exclude = true
+extend-include = ["*.pyw"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B", "SIM", "RUF", "BLE", "S110", "PLC0206"]
+
+[tool.ruff.format]
+# The README contains a byte-for-byte sample of checksum-bound generated output.
+exclude = ["README.md"]
+
+[tool.pyright]
+include = ["strix", "strix.py", "strix.pyw", "tests"]
+exclude = ["example/neo-sample.py", "strix-*.py", "neo-*.py", "**/__pycache__", ".venv"]
+ignore = ["example/neo-sample.py", "strix-*.py", "neo-*.py"]
+pythonVersion = "3.10"
+typeCheckingMode = "basic"
