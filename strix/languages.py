@@ -27,6 +27,15 @@ LANGUAGES = (
     Language("TypeScript ESM", (".mts",), "javascript", ".mjs"),
     Language("TypeScript CommonJS", (".cts",), "javascript", ".cjs"),
     Language("JSX / TSX", (".jsx", ".tsx"), "javascript", ".js"),
+    Language("C", (".c",), "c"),
+    Language("C++", (".cc", ".cpp", ".cxx", ".c++"), "c"),
+    Language(
+        "C/C++ headers",
+        (".h", ".hh", ".hpp", ".hxx", ".h++"),
+        "c",
+    ),
+    Language("C#", (".cs",), "csharp"),
+    Language("Java", (".java",), "java"),
 )
 SUPPORTED_SUFFIXES = frozenset(suffix for item in LANGUAGES for suffix in item.suffixes)
 PYTHON_SUFFIXES = frozenset((".py", ".pyw"))
@@ -81,6 +90,18 @@ def read_source(path: Path, *, limit: int = -1) -> str:
         return stream.read(limit)
 
 
+def validate_output(source: Path, output: Path):
+    language = require_language(source)
+    if output.suffix.lower() != output_relative(source).suffix.lower():
+        raise ValueError(
+            f"Use a {output_relative(source).suffix} output for {language.name}."
+        )
+    if language.engine == "java" and source.name != output.name:
+        raise ValueError(
+            "Java output must keep the original file name. Choose another folder."
+        )
+
+
 def obfuscate_file(
     path: Path,
     *,
@@ -90,6 +111,18 @@ def obfuscate_file(
     more=True,
     style="mine",
     importable=False,
+    hw_bind=False,
+    py_lock=True,
+    anti_debug=True,
+    anti_hook=True,
+    anti_frame=True,
+    anti_vm=True,
+    anti_proxy=True,
+    anti_httptoolkit=True,
+    anti_pydc=True,
+    anti_crack=True,
+    junk=True,
+    cff=True,
 ) -> str:
     language = require_language(path)
     if mode not in (1, 2, 3):
@@ -103,9 +136,31 @@ def obfuscate_file(
             more=more,
             style=style,
             importable=importable,
+            hw_bind=hw_bind,
+            py_lock=py_lock,
+            anti_debug=anti_debug,
+            anti_hook=anti_hook,
+            anti_frame=anti_frame,
+            anti_vm=anti_vm,
+            anti_proxy=anti_proxy,
+            anti_httptoolkit=anti_httptoolkit,
+            anti_pydc=anti_pydc,
+            anti_crack=anti_crack,
+            junk=junk,
+            cff=cff,
         )
+    if language.engine == "c":
+        from .native import obfuscate_c
+
+        return obfuscate_c(path, mode=mode, more=more)
+    if language.engine in ("csharp", "java"):
+        from .native import managed_command
+
+        command = managed_command(path, mode=mode, more=more)
+    else:
+        command = javascript_command(path, mode=mode, more=more)
     result = subprocess.run(
-        javascript_command(path, mode=mode, more=more),
+        command,
         capture_output=True,
         encoding="utf-8",
         errors="strict",

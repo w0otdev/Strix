@@ -21,6 +21,7 @@ from .languages import (
     language_for,
     output_relative,
     require_language,
+    validate_output,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -100,19 +101,14 @@ class BuildRequest:
     protect: bool = True
     hide: bool = True
     more: bool = True
+    hw_bind: bool = False
+    py_lock: bool = True
 
     def validate(self):
         if not self.source.is_file() and not self.source.is_dir():
             raise ValueError("Choose an existing source file or project folder.")
         if self.source.is_file():
-            require_language(self.source)
-            if (
-                self.output.suffix.lower()
-                != output_relative(self.source).suffix.lower()
-            ):
-                raise ValueError(
-                    f"Use a {output_relative(self.source).suffix} output for this source format."
-                )
+            validate_output(self.source, self.output)
         if self.source.resolve() == self.output.resolve():
             raise ValueError(
                 "Choose an output path different from the original source."
@@ -123,7 +119,14 @@ class BuildRequest:
             self.source.resolve()
         ):
             raise ValueError("Choose an output folder outside the source project.")
-        if not self.output.parent.is_dir():
+        java_folder = (
+            self.source.is_file()
+            and self.source.suffix.lower() == ".java"
+            and not self.output.parent.exists()
+            and not self.output.parent.is_symlink()
+            and self.output.parent.parent.is_dir()
+        )
+        if not self.output.parent.is_dir() and not java_folder:
             raise ValueError("The output folder does not exist.")
         if self.mode not in (1, 2, 3) or self.style not in ("mine", "legacy"):
             raise ValueError("Select a valid mode and runtime style.")
@@ -131,6 +134,13 @@ class BuildRequest:
 
 def default_output(source: Path) -> Path:
     source = source.resolve()
+    if source.is_file() and source.suffix.lower() == ".java":
+        folder = source.with_name("strix-" + source.stem)
+        index = 2
+        while folder.exists() or folder.is_symlink():
+            folder = source.with_name(f"strix-{source.stem}-{index}")
+            index += 1
+        return folder / source.name
     emitted = source if source.is_dir() else output_relative(source)
     candidate = emitted.with_name("strix-" + emitted.name)
     suffix = 2
@@ -207,15 +217,24 @@ def _compile(
     ]
     if importable:
         command.append("--importable")
+    if request.hw_bind:
+        command.append("--hw-bind")
     for enabled, flag in (
         (request.protect, "--no-protect"),
         (request.hide, "--no-hide"),
         (request.more, "--no-more"),
+        (request.py_lock, "--no-py-lock"),
     ):
         if not enabled:
             command.append(flag)
     if language.engine == "javascript":
         command = javascript_command(
+            source, mode=request.mode, more=request.more, output=staged
+        )
+    elif language.engine in ("csharp", "java"):
+        from .native import managed_command
+
+        command = managed_command(
             source, mode=request.mode, more=request.more, output=staged
         )
     environment = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
@@ -264,8 +283,12 @@ def run_build(request: BuildRequest, events: queue.Queue, cancel: threading.Even
         if cancel.is_set():
             events.put(("cancelled", None))
             return
+        new_java_folder = not request.output.parent.exists()
         with tempfile.TemporaryDirectory(
-            prefix=".strix-", dir=request.output.parent
+            prefix=".strix-",
+            dir=request.output.parent.parent
+            if new_java_folder
+            else request.output.parent,
         ) as folder:
             if request.source.is_dir():
                 manifest = scan_project(request.source)
@@ -353,14 +376,27 @@ def run_build(request: BuildRequest, events: queue.Queue, cancel: threading.Even
                     )
                 staged.rename(request.output)
             else:
-                staged = Path(folder) / ("build" + request.output.suffix)
+                publish = Path(folder) / "publish"
+                publish.mkdir()
+                staged = publish / request.source.name
                 if not _compile(request, request.source, staged, events, cancel):
                     events.put(("cancelled", None))
                     return
-                data = staged.read_bytes()
-                with request.output.open("xb") as output:
-                    output.write(data)
-                shutil.copymode(request.source, request.output)
+                shutil.copymode(request.source, staged)
+                if new_java_folder:
+                    if (
+                        request.output.parent.exists()
+                        or request.output.parent.is_symlink()
+                    ):
+                        raise ValueError(
+                            "The Java output folder was created by another operation."
+                        )
+                    publish.rename(request.output.parent)
+                else:
+                    data = staged.read_bytes()
+                    with request.output.open("xb") as output:
+                        output.write(data)
+                    shutil.copymode(request.source, request.output)
             events.put(("done", request.output))
     except Exception as error:  # noqa: BLE001 - surface worker failures inside the UI.
         events.put(("error", str(error)))

@@ -536,12 +536,22 @@ class StrixApp:
             )
 
     def _mode_changed(self, *_args):
-        javascript = (
-            self.loaded_path
-            and not self.is_folder
-            and self.loaded_path.suffix.lower() not in PYTHON_SUFFIXES
+        language = (
+            require_language(self.loaded_path)
+            if self.loaded_path and not self.is_folder
+            else None
         )
-        if javascript:
+        native = language and language.engine in ("c", "csharp", "java")
+        javascript = language and language.engine == "javascript"
+        if native:
+            hint = (
+                "Encodes string literals; keeps public names."
+                if self.mode.get() == 1 or not self.more.get()
+                else "Encodes strings and renames eligible local variables."
+                if self.mode.get() == 2
+                else "Splits encoded strings and uses longer local names."
+            )
+        elif javascript:
             hint = (
                 "Encodes strings; keeps original identifiers."
                 if not self.more.get()
@@ -696,9 +706,7 @@ class StrixApp:
             self._replace_text(
                 self.preview, "This folder contains no supported source files."
             )
-            self.status.set(
-                "Choose a folder containing Python, JavaScript or TypeScript."
-            )
+            self.status.set("Choose a folder containing supported source files.")
             self.build_button.configure(state="disabled")
 
     def _tree_selected(self, _event):
@@ -768,7 +776,11 @@ class StrixApp:
             defaultextension=current.suffix if current else ".py",
             filetypes=FILE_TYPES,
             confirmoverwrite=False,
-            initialdir=str(current.parent) if current else None,
+            initialdir=str(
+                current.parent if current.parent.is_dir() else current.parent.parent
+            )
+            if current
+            else None,
             initialfile=current.name if current else "protected.py",
         )
         if path:
@@ -972,8 +984,8 @@ class StrixApp:
         self._replace_text(
             text,
             "Choose a file or a project folder, select an output path, then Obfuscate.\n\n"
-            "Python, JavaScript, TypeScript and JSX/TSX are supported. Folder builds preserve supporting files and public APIs. TypeScript/JSX emit JavaScript; relative TS/JSX imports are updated. Dependencies and declarations are copied; source maps, caches and build folders are excluded.\n\n"
-            f"Python output requires Python {VER}. JS/TS builds require Node.js 18+ and the local npm engine. Python guard/style/builtin switches apply only to Python. JSX uses tsconfig factories (React.createElement by default). Existing desktop output paths are never overwritten.\n\n"
+            "Python, JavaScript/TypeScript, JSX/TSX, C/C++ (including headers), C# and Java are supported. Folder builds preserve supporting files and public APIs. TypeScript/JSX emit JavaScript. Java keeps the original file name in a new folder. Source maps, caches and build folders are excluded.\n\n"
+            f"Python output requires Python {VER}. JS/TS builds require Node.js 18+ and the local npm engine. C/C++ requires libclang, C# requires .NET SDK 8+, Java requires JDK 17+. Native output is source code for your normal build tool. Python guard/style/builtin switches apply only to Python. Existing desktop output paths are never overwritten.\n\n"
             "Ctrl+O: file    Ctrl+Shift+O: folder\nCtrl+Shift+S: output    Ctrl+Enter: obfuscate    Esc: cancel",
         )
         Switch(window, "Reduce motion", self.reduced_motion).pack(

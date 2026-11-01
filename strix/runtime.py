@@ -12,6 +12,7 @@ import sys
 import zlib
 
 from . import context as ctx
+from .bvm import build_bvm_package, build_bvm_runner_src
 from .context import (
     DIE_CODE,
     INNER_NAME,
@@ -29,12 +30,22 @@ from .context import (
     q,
     rn,
 )
+from .crypto import (
+    build_inline_decryptor_src,
+    encrypt_payload_5layer,
+    new_crypto_meta,
+)
+from .guards import assemble_inner_guards_source, build_burn_stub
 from .literals import harden_literals
 from .transforms import (
     Cv,
+    IntObfuscator,
+    StringEncryptor,
     anti_pycdc_block,
     clean_try_except,
+    flatten_control_flow,
     hide_builtins,
+    inject_junk,
     obf_consts,
     obf_vars,
     spam,
@@ -111,29 +122,80 @@ def build_antidump():
     return "\n".join(L)
 
 
-def build_guard():
-    return (
-        build_antidump()
-        + "\n"
-        + (
-            f"if {QN('getattr')}({QN('sysm')},{S('gettrace')})() is not None:\n"
-            f"    {QN('die')}()\n"
-            f"{QN('getattr')}({QN('sysm')},{S('settrace')})(None)\n"
-            f"try:\n"
-            f"    {QN('getattr')}({QN('sysm')},{S('setprofile')})(None)\n"
-            f"    _ge_ = {QN('getattr')}({QN('getattr')}({QN('sysm')},{S('monitoring')}),{S('get_events')})\n"
-            f"    for _tid_ in (0, 1, 2, 3, 4, 5):\n"
-            f"        if _ge_(_tid_):\n"
-            f"            {QN('die')}()\n"
-            f"except Exception:\n"
-            f"    pass\n"
-        )
+def build_guard(
+    *,
+    anti_debug=True,
+    anti_hook=True,
+    anti_frame=True,
+    anti_vm=True,
+    anti_proxy=True,
+    anti_httptoolkit=True,
+    anti_pydc=True,
+    anti_crack=True,
+):
+    return assemble_inner_guards_source(
+        die_code=DIE_CODE,
+        inner_names=(INNER_NAME, "<Strix>", "<string>"),
+        anti_debug=anti_debug,
+        anti_hook=anti_hook,
+        anti_frame=anti_frame,
+        anti_vm=anti_vm,
+        anti_proxy=anti_proxy,
+        anti_httptoolkit=anti_httptoolkit,
+        anti_pydc=anti_pydc,
+        anti_crack=anti_crack,
+        use_burn=True,
     )
 
 
-def _build_loader_and_parts(la, ll, m1, m2, compiled):
+_OUTER_BURN_SNIPPET = (
+    "import os as _o,sys as _s,time as _t,threading as _h\n"
+    f"_e=_t.perf_counter()+(0.02 if 'pytest' in _s.modules else 0.15)\n"
+    "def _sp():\n"
+    " _v=0x5BD1E995\n"
+    " while _t.perf_counter()<_e:_v=((_v*1664525)+1013904223)&0xFFFFFFFF\n"
+    "_ts=[_h.Thread(target=_sp,daemon=True) for _ in range(min(_o.cpu_count() or 2,4))]\n"
+    "for _x in _ts:_x.start()\n"
+    "for _x in _ts:_x.join(0.2)\n"
+    "if _s.platform=='win32' and 'pytest' not in _s.modules:\n"
+    f" try:__import__('ctypes').windll.kernel32.TerminateProcess(__import__('ctypes').c_void_p(-1),{DIE_CODE})\n"
+    " except Exception:pass\n"
+)
+
+
+def _build_loader_and_parts(
+    la,
+    ll,
+    m1,
+    m2,
+    bvm_pkg,
+    bvm_meta,
+    *,
+    hw_bind=False,
+    protect=True,
+):
     m1h = m1.encode().hex()
     m2h = m2.encode().hex()
+    c_meta = new_crypto_meta(hw_bind=hw_bind)
+    dec_fn = rn(12)
+    bvm_fn = rn(12)
+    burn_fn = rn(12)
+
+    boot_lines = [
+        build_burn_stub(burn_fn, DIE_CODE) if protect else "",
+        build_inline_decryptor_src(c_meta, dec_fn),
+        build_bvm_runner_src(bvm_meta, bvm_fn),
+        "try:",
+        f"    _k5 = {dec_fn}(_ct5, _mt_)",
+        f"    _k6 = {bvm_fn}(_k5, None)",
+        "except Exception:",
+        f"    {burn_fn}()" if protect else f"    {QN('die')}()",
+        f"    {QN('die')}()",
+        f"del {dec_fn}, {bvm_fn}" + (f", {burn_fn}" if protect else ""),
+    ]
+    boot_src = "\n".join(line for line in boot_lines if line)
+    boot_co = compile(boot_src, INNER_NAME, "exec")
+
     lc = [
         "try:",
         f"    with {QN('bd')}[{S('open')}]({QN('globals')}()[{S('__file__')}], {S('rb')}) as _src_:",
@@ -150,26 +212,39 @@ def _build_loader_and_parts(la, ll, m1, m2, compiled):
         "        _Kl_.append(_hc_.digest())",
         "    _Kq_ = b''.join(_Kl_)",
         f"    _k2 = {QN('bytes')}([(_b_ ^ _Kq_[_iX_]) for _iX_, _b_ in enumerate(_k1)])",
-        f"    _k3 = {QN('getattr')}({QN('bz')}, {S('decompress')})(_k2)",
-        f"    _k4 = {QN('getattr')}({QN('lm')}, {S('decompress')})(_k3)",
-        f"    _k5 = {QN('getattr')}({QN('mz')}, {S('decompress')})(_k4)",
-        f"    _k6 = {QN('getattr')}({QN('ms')}, {S('loads')})(_k5)",
+        f"    _boot_z, _ct5 = {QN('getattr')}({QN('ms')}, {S('loads')})(_k2)",
+        f"    _boot_co = {QN('getattr')}({QN('ms')}, {S('loads')})({QN('getattr')}({QN('mz')}, {S('decompress')})(_boot_z))",
+        f"    {QN('exec')}(_boot_co, {QN('globals')}())",
         "except Exception:",
         f"    {QN('die')}()",
-        f"del {ll},_ow_,_mt_,_hb_,_Kl_,_Kq_,_k1,_k2,_k3,_k4,_k5",
+        f"del {ll},_src_,_ow_,_i1_,_i2_,_mt_,_hb_,_Kl_,_Kq_,_k1,_k2,_boot_z,_boot_co,_ct5,_k5",
         f"{QN('exec')}({QN('globals')}().pop({S('_k6')}), {QN('globals')}())",
     ]
     material = (
         "#!/usr/bin/python" + VER + "\n" + "\n".join(la) + "\n# \n" + "\n".join(lc) + "\n"
     )
-    z3 = bz2.compress(lzma.compress(zlib.compress(compiled)))
-    ks = make_ks(material.encode("utf-8"), len(z3))
-    s85 = base64.b85encode(bytes(a ^ b for a, b in zip(z3, ks, strict=True)))
+    enc_meta = encrypt_payload_5layer(
+        bvm_pkg,
+        outer_material=material.encode("utf-8"),
+        hw_bind=hw_bind,
+        preset_meta=c_meta,
+    )
+    ct5 = enc_meta["stored_master"] + enc_meta["ciphertext"]
+    envelope = marshal.dumps((zlib.compress(marshal.dumps(boot_co), 9), ct5))
+    ks = make_ks(material.encode("utf-8"), len(envelope))
+    s85 = base64.b85encode(bytes(a ^ b for a, b in zip(envelope, ks, strict=True)))
     parts = [s85[i : i + 1500] for i in range(0, len(s85), 1500)]
     return lc, parts
 
 
-def build_runtime_legacy(compiled, protect=True):
+def build_runtime_legacy(
+    bvm_pkg,
+    bvm_meta,
+    protect=True,
+    *,
+    hw_bind=False,
+    py_lock=True,
+):
     m1 = mkmarker()
     m2 = mkmarker()
 
@@ -201,16 +276,22 @@ def build_runtime_legacy(compiled, protect=True):
     )
 
     a(f"def {QN('die')}():")
+    if protect:
+        a(f"    try: {QN('exec')}({S(_OUTER_BURN_SNIPPET)}, {{}})")
+        a("    except Exception: pass")
     a(f"    raise ({QN('bd')}[{S('SystemExit')}])({I(DIE_CODE)}) from None")
 
-    a(
-        f"_vv_ = {QN('getattr')}({QN('getattr')}({QN('sysm')}, {S('version_info')}), {S('major')})"
-    )
-    a(
-        f"_w_ = {QN('getattr')}({QN('getattr')}({QN('sysm')}, {S('version_info')}), {S('minor')})"
-    )
-    a(f"if _vv_ != {I(sys.version_info.major)} or _w_ != {I(sys.version_info.minor)}:")
-    a(f"    {QN('die')}()")
+    if py_lock:
+        a(
+            f"_vv_ = {QN('getattr')}({QN('getattr')}({QN('sysm')}, {S('version_info')}), {S('major')})"
+        )
+        a(
+            f"_w_ = {QN('getattr')}({QN('getattr')}({QN('sysm')}, {S('version_info')}), {S('minor')})"
+        )
+        a(
+            f"if _vv_ != {I(sys.version_info.major)} or _w_ != {I(sys.version_info.minor)}:"
+        )
+        a(f"    {QN('die')}()")
 
     a(f"{QN('osm')} = {QN('import')}({S('os')})")
     a(f"{QN('mz')} = {QN('import')}({S('zlib')})")
@@ -247,7 +328,16 @@ def build_runtime_legacy(compiled, protect=True):
         )
         a(build_antidump())
 
-    lc, parts = _build_loader_and_parts(la, "_pp_", m1, m2, compiled)
+    lc, parts = _build_loader_and_parts(
+        la,
+        "_pp_",
+        m1,
+        m2,
+        bvm_pkg,
+        bvm_meta,
+        hw_bind=hw_bind,
+        protect=protect,
+    )
     pnames = [rn() for _ in parts]
     refs = [
         f"{QN('getattr')}({pname} , {S('to_bytes')})(({QN('getattr')}({pname} , {S('bit_length')})() + 7) // 8, {S('big')})[1:]"
@@ -261,7 +351,15 @@ def build_runtime_legacy(compiled, protect=True):
     return "\n".join([*la, "# " + m1, pc, pp, "# " + m2, *lc])
 
 
-def build_runtime(compiled, protect=True, *, importable=False):
+def build_runtime(
+    bvm_pkg,
+    bvm_meta,
+    protect=True,
+    *,
+    importable=False,
+    hw_bind=False,
+    py_lock=True,
+):
     m1 = mkmarker()
     m2 = mkmarker()
 
@@ -269,23 +367,24 @@ def build_runtime(compiled, protect=True, *, importable=False):
     a = la.append
     mine = MINE()
 
-    lock = (
-        f"_vv_=__import__('sys').version_info\n"
-        f"if _vv_.major!={sys.version_info.major} or _vv_.minor!={sys.version_info.minor}:\n"
-        f"    raise SystemExit({DIE_CODE})\n"
-        f"del _vv_\n"
-    )
-    dec_expr = (
-        '"".join(chr((_m_ - '
-        + str(OFF)
-        + ") ^ (("
-        + str(ctx.K)
-        + " + _i_ * 0x5BD1E995) & 0xFFFFFFFF)) for _i_, _m_ in enumerate("
-        + repr(enc_seq(lock))
-        + "))"
-    )
     a("# -*- coding: utf-8 -*-")
-    a(f'__import__("builtins").exec({dec_expr})')
+    if py_lock:
+        lock = (
+            f"_vv_=__import__('sys').version_info\n"
+            f"if _vv_.major!={sys.version_info.major} or _vv_.minor!={sys.version_info.minor}:\n"
+            f"    raise SystemExit({DIE_CODE})\n"
+            f"del _vv_\n"
+        )
+        dec_expr = (
+            '"".join(chr((_m_ - '
+            + str(OFF)
+            + ") ^ (("
+            + str(ctx.K)
+            + " + _i_ * 0x5BD1E995) & 0xFFFFFFFF)) for _i_, _m_ in enumerate("
+            + repr(enc_seq(lock))
+            + "))"
+        )
+        a(f'__import__("builtins").exec({dec_expr})')
 
     sysa = mine.n()
     a(f"import sys as {sysa}")
@@ -327,6 +426,9 @@ def build_runtime(compiled, protect=True, *, importable=False):
 
     dnm = mine.n()
     a(f"def {dnm}():")
+    if protect:
+        a(f"    try: ({bm['exec']})(({d})({q(_OUTER_BURN_SNIPPET)}), {{}})")
+        a("    except Exception: pass")
     a(f"    raise (SystemExit)(({bm['int']})(({d})({q(str(DIE_CODE))}))) from None")
 
     bdname = mine.n()
@@ -407,7 +509,16 @@ def build_runtime(compiled, protect=True, *, importable=False):
         a(build_antidump())
 
     ll = mine.nl()
-    lc, parts = _build_loader_and_parts(la, ll, m1, m2, compiled)
+    lc, parts = _build_loader_and_parts(
+        la,
+        ll,
+        m1,
+        m2,
+        bvm_pkg,
+        bvm_meta,
+        hw_bind=hw_bind,
+        protect=protect,
+    )
     pnames = [mine.nl() for _ in parts]
     pc = "\n".join(
         f"{nm} = {int.from_bytes(bytes([1]) + part, 'big')}"
@@ -477,6 +588,18 @@ def pipeline(
     style="mine",
     *,
     importable=False,
+    hw_bind=False,
+    py_lock=True,
+    anti_debug=True,
+    anti_hook=True,
+    anti_frame=True,
+    anti_vm=True,
+    anti_proxy=True,
+    anti_httptoolkit=True,
+    anti_pydc=True,
+    anti_crack=True,
+    junk=True,
+    cff=True,
 ):
     ctx.reset_key()
 
@@ -495,29 +618,88 @@ def pipeline(
 
     if mode >= 2 and more:
         if not importable:
-            code = obf_vars(code)
+            code = obf_vars(code, use_confuse=True)
         if hide:
             code = hide_builtins(code)
         code = harden_literals(code, fragment=mode >= 3)
+        try:
+            tree = ast.parse(code)
+            if not importable and junk:
+                tree = inject_junk(tree)
+            if not importable and cff:
+                tree = flatten_control_flow(tree)
+            tree = StringEncryptor().visit(tree)
+            tree = IntObfuscator().visit(tree)
+            ast.fix_missing_locations(tree)
+            code = ast.unparse(tree)
+        except SyntaxError:
+            pass
         code = spam(code)
     else:
+        try:
+            tree = ast.parse(code)
+            tree = StringEncryptor().visit(tree)
+            tree = IntObfuscator().visit(tree)
+            ast.fix_missing_locations(tree)
+            code = ast.unparse(tree)
+        except SyntaxError:
+            pass
         code = obf_consts(code)
         code = spam(code)
 
     prefix, code = _module_prefix(code, annotations)
+    if protect:
+        if (
+            anti_debug
+            and anti_hook
+            and anti_frame
+            and anti_vm
+            and anti_proxy
+            and anti_httptoolkit
+            and anti_pydc
+            and anti_crack
+        ):
+            guard_block = build_guard()
+        else:
+            guard_block = build_guard(
+                anti_debug=anti_debug,
+                anti_hook=anti_hook,
+                anti_frame=anti_frame,
+                anti_vm=anti_vm,
+                anti_proxy=anti_proxy,
+                anti_httptoolkit=anti_httptoolkit,
+                anti_pydc=anti_pydc,
+                anti_crack=anti_crack,
+            )
+    else:
+        guard_block = ""
+
     final = (
         prefix
         + "\n"
-        + (build_guard() if protect else "")
-        + (anti_pycdc_block() if not importable else "")
+        + guard_block
+        + (anti_pycdc_block() if (anti_pydc and not importable) else "")
         + "\n"
         + code
     )
 
-    compiled = marshal.dumps(compile(final, INNER_NAME, "exec"))
+    bvm_pkg, bvm_meta = build_bvm_package(final, INNER_NAME)
     if style == "legacy":
-        header = build_runtime_legacy(compiled, protect)
+        header = build_runtime_legacy(
+            bvm_pkg,
+            bvm_meta,
+            protect,
+            hw_bind=hw_bind,
+            py_lock=py_lock,
+        )
     else:
-        header = build_runtime(compiled, protect, importable=importable)
+        header = build_runtime(
+            bvm_pkg,
+            bvm_meta,
+            protect,
+            importable=importable,
+            hw_bind=hw_bind,
+            py_lock=py_lock,
+        )
 
     return f"#!/usr/bin/python{VER}\n" + header + "\n"

@@ -18,9 +18,9 @@ from .desktop import BuildRequest, default_output, run_build
 from .languages import (
     LANGUAGES,
     obfuscate_file,
-    output_relative,
     read_source,
     require_language,
+    validate_output,
 )
 
 LOGO = r"""
@@ -78,7 +78,7 @@ def parse_args():
     interface.add_argument(
         "--cli", action="store_true", help="use the interactive terminal interface"
     )
-    p.add_argument("-f", "--file", help="path to the file to obfuscate")
+    p.add_argument("-f", "--file", help="supported source file or project folder")
     p.add_argument(
         "--list-languages", action="store_true", help="list supported source formats"
     )
@@ -103,7 +103,45 @@ def parse_args():
     p.add_argument(
         "--no-more",
         action="store_true",
-        help="disable variable renaming and advanced spam",
+        help="disable identifier renaming and extra control-flow passes",
+    )
+    p.add_argument(
+        "--hw-bind",
+        action="store_true",
+        help="bind encrypted payload to current machine hardware fingerprint",
+    )
+    p.add_argument(
+        "--py-lock",
+        action="store_true",
+        default=True,
+        help="lock payload execution to current Python major.minor version (default)",
+    )
+    p.add_argument(
+        "--no-py-lock",
+        action="store_true",
+        help="disable Python version lock",
+    )
+    p.add_argument(
+        "--no-junk",
+        action="store_true",
+        help="disable opaque junk function injection",
+    )
+    p.add_argument(
+        "--no-cff",
+        action="store_true",
+        help="disable top-level control-flow flattening",
+    )
+    p.add_argument("--no-anti-debug", action="store_true", help="disable anti-debug guard")
+    p.add_argument("--no-anti-hook", action="store_true", help="disable anti-hook guard")
+    p.add_argument("--no-anti-frame", action="store_true", help="disable anti-frame guard")
+    p.add_argument("--no-anti-vm", action="store_true", help="disable anti-VM guard")
+    p.add_argument("--no-anti-proxy", action="store_true", help="disable anti-proxy guard")
+    p.add_argument(
+        "--no-anti-httptoolkit", action="store_true", help="disable anti-HTTPToolkit guard"
+    )
+    p.add_argument("--no-anti-pydc", action="store_true", help="disable anti-decompiler traps")
+    p.add_argument(
+        "--no-anti-crack", action="store_true", help="disable anti-crack socket/builtin guard"
     )
     p.add_argument("--banner", action="store_true", help="show banner even with -f")
     p.add_argument(
@@ -135,17 +173,51 @@ def _write_atomic(source_file, output, content):
 
 
 def run_headless(
-    file, output, mode, protect, hide, more, style="mine", *, importable=False
+    file,
+    output,
+    mode,
+    protect,
+    hide,
+    more,
+    style="mine",
+    *,
+    importable=False,
+    hw_bind=False,
+    py_lock=True,
+    anti_debug=True,
+    anti_hook=True,
+    anti_frame=True,
+    anti_vm=True,
+    anti_proxy=True,
+    anti_httptoolkit=True,
+    anti_pydc=True,
+    anti_crack=True,
+    junk=True,
+    cff=True,
 ):
     src_path = Path(file).resolve()
     out_path = Path(output)
-    if src_path.is_dir():
+    if src_path.is_file():
+        validate_output(src_path, out_path)
+    if src_path.is_dir() or (
+        src_path.suffix.lower() == ".java" and not out_path.parent.exists()
+    ):
         events = queue.Queue()
         cancel = threading.Event()
         worker = threading.Thread(
             target=run_build,
             args=(
-                BuildRequest(src_path, out_path, mode, style, protect, hide, more),
+                BuildRequest(
+                    src_path,
+                    out_path,
+                    mode,
+                    style,
+                    protect,
+                    hide,
+                    more,
+                    hw_bind,
+                    py_lock,
+                ),
                 events,
                 cancel,
             ),
@@ -163,7 +235,7 @@ def run_headless(
                 elif kind == "error":
                     raise ValueError(value)
                 elif kind == "done":
-                    log_ok(f"Saved project {value}")
+                    log_ok(f"Saved {value}")
                     return
                 elif kind == "cancelled":
                     raise ValueError("Build cancelled.")
@@ -174,10 +246,6 @@ def run_headless(
                     process.terminate()
             worker.join()
     language = require_language(src_path)
-    if out_path.suffix.lower() != output_relative(src_path).suffix.lower():
-        raise ValueError(
-            f"Use a {output_relative(src_path).suffix} output for {language.name}."
-        )
     if out_path.is_symlink():
         raise ValueError("Refusing to overwrite a symbolic link.")
     if src_path == out_path.resolve():
@@ -195,6 +263,18 @@ def run_headless(
         more=more,
         style=style,
         importable=importable,
+        hw_bind=hw_bind,
+        py_lock=py_lock,
+        anti_debug=anti_debug,
+        anti_hook=anti_hook,
+        anti_frame=anti_frame,
+        anti_vm=anti_vm,
+        anti_proxy=anti_proxy,
+        anti_httptoolkit=anti_httptoolkit,
+        anti_pydc=anti_pydc,
+        anti_crack=anti_crack,
+        junk=junk,
+        cff=cff,
     )
     _write_atomic(file, output, out)
     log_ok(f"Saved {output} | engine done.")
@@ -244,6 +324,18 @@ def main():
                 more,
                 style,
                 importable=args.importable,
+                hw_bind=args.hw_bind,
+                py_lock=args.py_lock and not args.no_py_lock,
+                anti_debug=not args.no_anti_debug,
+                anti_hook=not args.no_anti_hook,
+                anti_frame=not args.no_anti_frame,
+                anti_vm=not args.no_anti_vm,
+                anti_proxy=not args.no_anti_proxy,
+                anti_httptoolkit=not args.no_anti_httptoolkit,
+                anti_pydc=not args.no_anti_pydc,
+                anti_crack=not args.no_anti_crack,
+                junk=not args.no_junk,
+                cff=not args.no_cff,
             )
             log_info(f"Done in {time.time() - st:.3f}s")
             return

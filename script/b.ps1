@@ -144,6 +144,10 @@ if __name__ == "__main__":
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to install the local JavaScript/TypeScript engine. Install Node.js 18+ and npm."
     }
+    & $PythonExe -m pip install -r (Join-Path $Root "requirements-native.txt")
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to install the C/C++ parser."
+    }
     $PyInstallerArgs = @(
         "-m", "PyInstaller",
         "--noconfirm",
@@ -157,6 +161,8 @@ if __name__ == "__main__":
         "--add-data", "$Root\strix.py;.",
         "--add-data", "$Root\strix.pyw;.",
         "--add-data", "$JsEngine;strix/engines/javascript",
+        "--add-data", "$Root\strix\engines\native;strix/engines/native",
+        "--collect-all", "clang",
         "--collect-submodules", "strix",
         "--hidden-import", "tkinter",
         "--hidden-import", "tkinter.ttk",

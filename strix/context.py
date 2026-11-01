@@ -263,6 +263,8 @@ MINERALS = [
 ]
 
 NAME = {}
+_CONFUSE_CHARS = "Il1O0"
+_USED_CONFUSE: set[str] = set()
 _SLOTS = (
     "dec",
     "int",
@@ -313,6 +315,7 @@ def reset_key():
     global K
     K = random.randint(1, 0xFFFFFFFF)
     NAME.clear()
+    _USED_CONFUSE.clear()
     for _slot in _SLOTS:
         QN(_slot)
     return K
@@ -320,6 +323,17 @@ def reset_key():
 
 for _slot in _SLOTS:
     QN(_slot)
+
+
+def rand_confuse_name(length: int = 18) -> str:
+    used = set(NAME.values()) | _USED_CONFUSE
+    while True:
+        c = random.choice("IlO") + "".join(
+            random.choices(_CONFUSE_CHARS, k=max(1, length - 1))
+        )
+        if c not in used:
+            _USED_CONFUSE.add(c)
+            return c
 
 
 def hz():

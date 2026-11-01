@@ -69,13 +69,15 @@ def harden_literals(source: str, *, fragment: bool = False) -> str:
                 used_number = True
                 mask = secrets.randbits(64) | 1
                 offset = secrets.randbits(64) | 1
-                variant = secrets.randbelow(3)
+                variant = secrets.randbelow(4)
                 if variant == 0:
                     encoded = (value + offset) ^ mask
                 elif variant == 1:
                     encoded = (value ^ mask) + offset
-                else:
+                elif variant == 2:
                     encoded = (value ^ mask) - offset
+                else:
+                    encoded = (value ^ mask) ^ offset
                 return ast.copy_location(
                     ast.Call(
                         func=ast.Name(id=number, ctx=ast.Load()),
@@ -207,10 +209,15 @@ def {decoder}(_parts, _order, _nonce, _kind,
                 f"""
 def {number}(_value, _mask, _offset, _variant):
     if _variant == 0:
-        return (_value ^ _mask) - _offset
+        return ((_value + _mask) - ((_value & _mask) << 1)) - _offset
     if _variant == 1:
-        return (_value - _offset) ^ _mask
-    return (_value + _offset) ^ _mask
+        _t = _value - _offset
+        return (_t + _mask) - ((_t & _mask) << 1)
+    if _variant == 2:
+        _t = _value + _offset
+        return (_t + _mask) - ((_t & _mask) << 1)
+    _t = (_value + _offset) - ((_value & _offset) << 1)
+    return (_t + _mask) - ((_t & _mask) << 1)
 """
             ).body
         )
