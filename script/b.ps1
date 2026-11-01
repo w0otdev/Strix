@@ -139,6 +139,11 @@ if __name__ == "__main__":
     Set-Content -Path $EntryScript -Value $EntryCode -Encoding UTF8
 
     Write-Host "[4/5] Building portable executable from latest source..." -ForegroundColor Cyan
+    $JsEngine = Join-Path $Root "strix\engines\javascript"
+    & npm ci --prefix $JsEngine --ignore-scripts --no-audit --no-fund
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to install the local JavaScript/TypeScript engine. Install Node.js 18+ and npm."
+    }
     $PyInstallerArgs = @(
         "-m", "PyInstaller",
         "--noconfirm",
@@ -151,6 +156,7 @@ if __name__ == "__main__":
         "--add-data", "$Root\assets;assets",
         "--add-data", "$Root\strix.py;.",
         "--add-data", "$Root\strix.pyw;.",
+        "--add-data", "$JsEngine;strix/engines/javascript",
         "--collect-submodules", "strix",
         "--hidden-import", "tkinter",
         "--hidden-import", "tkinter.ttk",

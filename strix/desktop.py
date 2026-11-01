@@ -4,6 +4,7 @@
 """Desktop build jobs. The compiler runs in a separate, cancellable process."""
 
 import concurrent.futures
+import json
 import os
 import queue
 import shutil
@@ -13,6 +14,14 @@ import tempfile
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+
+from .languages import (
+    PYTHON_SUFFIXES,
+    javascript_command,
+    language_for,
+    output_relative,
+    require_language,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 IGNORED_FOLDERS = {
@@ -30,7 +39,6 @@ IGNORED_FOLDERS = {
     "build",
     "dist",
 }
-PYTHON_SUFFIXES = {".py", ".pyw"}
 
 
 @dataclass(frozen=True)
@@ -39,6 +47,10 @@ class ProjectManifest:
     python_files: tuple[Path, ...]
     skipped: int
     directories: tuple[Path, ...] = ()
+
+    @property
+    def source_files(self) -> tuple[Path, ...]:
+        return tuple(path for path in self.files if language_for(path) is not None)
 
 
 def scan_project(source: Path) -> ProjectManifest:
@@ -65,7 +77,7 @@ def scan_project(source: Path) -> ProjectManifest:
             path = Path(folder) / name
             if (
                 path.is_symlink()
-                or path.suffix in {".pyc", ".pyo"}
+                or path.suffix.lower() in {".pyc", ".pyo", ".map"}
                 or not path.is_file()
             ):
                 skipped += 1
@@ -91,7 +103,16 @@ class BuildRequest:
 
     def validate(self):
         if not self.source.is_file() and not self.source.is_dir():
-            raise ValueError("Choose an existing Python file or project folder.")
+            raise ValueError("Choose an existing source file or project folder.")
+        if self.source.is_file():
+            require_language(self.source)
+            if (
+                self.output.suffix.lower()
+                != output_relative(self.source).suffix.lower()
+            ):
+                raise ValueError(
+                    f"Use a {output_relative(self.source).suffix} output for this source format."
+                )
         if self.source.resolve() == self.output.resolve():
             raise ValueError(
                 "Choose an output path different from the original source."
@@ -110,17 +131,56 @@ class BuildRequest:
 
 def default_output(source: Path) -> Path:
     source = source.resolve()
-    candidate = source.with_name("strix-" + source.name)
+    emitted = source if source.is_dir() else output_relative(source)
+    candidate = emitted.with_name("strix-" + emitted.name)
     suffix = 2
     while candidate.exists() or candidate.is_symlink():
         name = (
             f"strix-{source.name}-{suffix}"
             if source.is_dir()
-            else f"strix-{source.stem}-{suffix}{source.suffix}"
+            else f"strix-{emitted.stem}-{suffix}{emitted.suffix}"
         )
         candidate = source.with_name(name)
         suffix += 1
     return candidate
+
+
+def _rewrite_package(target: Path, relative: Path, files: tuple[Path, ...]):
+    """Keep package entry points pointing at emitted JS without editing shell scripts."""
+    if relative.name != "package.json":
+        return
+    outputs = {
+        path: output_relative(path) for path in files if output_relative(path) != path
+    }
+    if not outputs:
+        return
+    original = target.read_text(encoding="utf-8-sig")
+    package = json.loads(original)
+
+    def rewrite(value):
+        if isinstance(value, str):
+            if value.startswith(("/", "#")) or ":" in value or "*" in value:
+                return value
+            key = Path(os.path.normpath(str(relative.parent / value)))
+            emitted = outputs.get(key)
+            if emitted is not None and emitted != key:
+                result = os.path.relpath(emitted, relative.parent).replace(os.sep, "/")
+                return "./" + result if value.startswith("./") else result
+            return value
+        if isinstance(value, list):
+            return [rewrite(item) for item in value]
+        if isinstance(value, dict):
+            return {key: rewrite(item) for key, item in value.items()}
+        return value
+
+    updated = dict(package)
+    for field in ("main", "module", "bin", "exports", "imports", "browser"):
+        if field in updated:
+            updated[field] = rewrite(updated[field])
+    if updated != package:
+        target.write_text(
+            json.dumps(updated, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
 
 
 def _compile(
@@ -132,6 +192,7 @@ def _compile(
     *,
     importable=False,
 ):
+    language = require_language(source)
     command = [
         sys.executable,
         "-u",
@@ -153,6 +214,10 @@ def _compile(
     ):
         if not enabled:
             command.append(flag)
+    if language.engine == "javascript":
+        command = javascript_command(
+            source, mode=request.mode, more=request.more, output=staged
+        )
     environment = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
     flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
     with subprocess.Popen(
@@ -166,6 +231,7 @@ def _compile(
         creationflags=flags,
     ) as process:
         events.put(("process", process))
+        events.put(("log", f"{language.name}: {source.name}"))
         if cancel.is_set():
             process.terminate()
         assert process.stdout is not None
@@ -203,10 +269,22 @@ def run_build(request: BuildRequest, events: queue.Queue, cancel: threading.Even
         ) as folder:
             if request.source.is_dir():
                 manifest = scan_project(request.source)
-                if not manifest.python_files:
+                if not manifest.source_files:
                     raise ValueError(
-                        "The selected folder contains no Python source files."
+                        "The selected folder contains no supported source files."
                     )
+                # Detect collisions before starting any compilation (.ts + .js, etc.).
+                targets = {}
+                for relative in manifest.files:
+                    emitted = output_relative(relative)
+                    key = os.path.normcase(str(emitted))
+                    if key in targets:
+                        raise ValueError(
+                            f"Output collision: {targets[key]} and {relative} both emit {emitted}."
+                        )
+                    targets[key] = relative
+                    if emitted in manifest.directories:
+                        raise ValueError(f"Output collision with directory: {emitted}.")
                 staged = Path(folder) / "project"
                 staged.mkdir()
                 for relative in manifest.directories:
@@ -215,9 +293,9 @@ def run_build(request: BuildRequest, events: queue.Queue, cancel: threading.Even
                 def _stage_file(relative: Path) -> Path | None:
                     if cancel.is_set():
                         return None
-                    target = staged / relative
+                    target = staged / output_relative(relative)
                     target.parent.mkdir(parents=True, exist_ok=True)
-                    if relative.suffix.lower() in PYTHON_SUFFIXES:
+                    if language_for(relative) is not None:
                         if not _compile(
                             request,
                             request.source / relative,
@@ -227,17 +305,19 @@ def run_build(request: BuildRequest, events: queue.Queue, cancel: threading.Even
                             importable=True,
                         ):
                             return None
+                        shutil.copymode(request.source / relative, target)
                     else:
                         src_item = request.source / relative
                         if src_item.is_symlink():
                             return None
                         shutil.copy2(src_item, target, follow_symlinks=False)
+                        _rewrite_package(target, relative, manifest.files)
                     return relative
 
                 total = len(manifest.files)
                 done = 0
-                if len(manifest.python_files) > 1:
-                    workers = min(len(manifest.python_files), os.cpu_count() or 4)
+                if len(manifest.source_files) > 1:
+                    workers = min(len(manifest.source_files), os.cpu_count() or 4, 4)
                     with concurrent.futures.ThreadPoolExecutor(
                         max_workers=workers
                     ) as pool:
@@ -273,13 +353,14 @@ def run_build(request: BuildRequest, events: queue.Queue, cancel: threading.Even
                     )
                 staged.rename(request.output)
             else:
-                staged = Path(folder) / "build.py"
+                staged = Path(folder) / ("build" + request.output.suffix)
                 if not _compile(request, request.source, staged, events, cancel):
                     events.put(("cancelled", None))
                     return
                 data = staged.read_bytes()
                 with request.output.open("xb") as output:
                     output.write(data)
+                shutil.copymode(request.source, request.output)
             events.put(("done", request.output))
     except Exception as error:  # noqa: BLE001 - surface worker failures inside the UI.
         events.put(("error", str(error)))

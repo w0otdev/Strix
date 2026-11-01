@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 
 # Caches & tooling
+node_modules/
 .ruff_cache/
 .pytest_cache/
 .mypy_cache/
@@ -32,3 +33,5 @@ strix-*.py
 neo-*.py
 
 /result
+/test/
+/tests/

@@ -5,15 +5,23 @@
 
 import argparse
 import os
+import queue
 import sys
 import tempfile
+import threading
 import time
-import tokenize
 import traceback
 from pathlib import Path
 
 from .context import VER
-from .runtime import pipeline
+from .desktop import BuildRequest, default_output, run_build
+from .languages import (
+    LANGUAGES,
+    obfuscate_file,
+    output_relative,
+    read_source,
+    require_language,
+)
 
 LOGO = r"""
 
@@ -72,6 +80,9 @@ def parse_args():
     )
     p.add_argument("-f", "--file", help="path to the file to obfuscate")
     p.add_argument(
+        "--list-languages", action="store_true", help="list supported source formats"
+    )
+    p.add_argument(
         "--importable",
         action="store_true",
         help="preserve module APIs and annotations; omit single-file guards",
@@ -128,15 +139,56 @@ def run_headless(
 ):
     src_path = Path(file).resolve()
     out_path = Path(output)
+    if src_path.is_dir():
+        events = queue.Queue()
+        cancel = threading.Event()
+        worker = threading.Thread(
+            target=run_build,
+            args=(
+                BuildRequest(src_path, out_path, mode, style, protect, hide, more),
+                events,
+                cancel,
+            ),
+            daemon=True,
+        )
+        worker.start()
+        processes = []
+        try:
+            while True:
+                kind, value = events.get()
+                if kind == "process":
+                    processes.append(value)
+                elif kind == "log":
+                    log_event(value)
+                elif kind == "error":
+                    raise ValueError(value)
+                elif kind == "done":
+                    log_ok(f"Saved project {value}")
+                    return
+                elif kind == "cancelled":
+                    raise ValueError("Build cancelled.")
+        finally:
+            cancel.set()
+            for process in processes:
+                if process.poll() is None:
+                    process.terminate()
+            worker.join()
+    language = require_language(src_path)
+    if out_path.suffix.lower() != output_relative(src_path).suffix.lower():
+        raise ValueError(
+            f"Use a {output_relative(src_path).suffix} output for {language.name}."
+        )
     if out_path.is_symlink():
         raise ValueError("Refusing to overwrite a symbolic link.")
     if src_path == out_path.resolve():
         raise ValueError("Output path must be different from the input source file.")
-    with tokenize.open(file) as f:
-        source = f.read()
-    log_event(f"Loaded {file} ({len(source)} bytes)")
-    out = pipeline(
-        source,
+    log_event(f"Loaded {file} | {language.name}")
+    if language.engine != "python":
+        log_info(
+            "Python runtime guards, builtin hiding and naming style apply only to Python."
+        )
+    out = obfuscate_file(
+        src_path,
         mode=mode,
         protect=protect,
         hide=hide,
@@ -150,6 +202,13 @@ def run_headless(
 
 def main():
     args = parse_args()
+
+    if args.list_languages:
+        for language in LANGUAGES:
+            suffixes = ", ".join(language.suffixes)
+            output = f" -> {language.output_suffix}" if language.output_suffix else ""
+            print(f"{language.name}: {suffixes}{output}")
+        return
 
     if args.gui or (not args.file and not args.cli):
         from .gui import launch_gui
@@ -168,9 +227,7 @@ def main():
     if args.file:
         if args.banner:
             print_logo()
-        output = args.output or str(
-            Path(args.file).with_name("strix-" + Path(args.file).name)
-        )
+        output = args.output or str(default_output(Path(args.file)))
         protect = not args.no_protect
         hide = not args.no_hide
         more = not args.no_more
@@ -204,10 +261,9 @@ def main():
     )
     while True:
         try:
-            with tokenize.open(file) as f:
-                f.read()
+            read_source(Path(file))
             break
-        except (OSError, UnicodeError, SyntaxError):
+        except (OSError, UnicodeError, SyntaxError, ValueError):
             file = (
                 input(stage("File not found, try again: ", symbol="?"))
                 .strip()
@@ -233,7 +289,7 @@ def main():
         stage("Output file name (leave blank for default): ", symbol="?")
     ).strip()
     if not output:
-        output = str(Path(file).with_name("strix-" + Path(file).name))
+        output = str(default_output(Path(file)))
 
     print()
     log_event("Starting Strix engine...")

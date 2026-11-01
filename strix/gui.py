@@ -1,7 +1,7 @@
 # Copyright (c) 2026 w0otdev (Strix modifications)
 # Licensed under the Apache License, Version 2.0.
 
-"""A silent, achromatic workspace for files and Python projects."""
+"""A silent, achromatic workspace for source files and mixed projects."""
 
 import ast
 import os
@@ -11,13 +11,13 @@ import sys
 import threading
 import time
 import tkinter as tk
-import tokenize
 from contextlib import suppress
 from pathlib import Path
 from tkinter import filedialog, ttk
 
 from .context import VER
 from .desktop import ROOT, BuildRequest, default_output, run_build, scan_project
+from .languages import FILE_TYPES, PYTHON_SUFFIXES, read_source, require_language
 from .motion import (
     ColorTransition,
     MotionProgress,
@@ -149,6 +149,7 @@ class StrixApp:
         self.events = queue.Queue()
         self.cancel = threading.Event()
         self.process = None
+        self.processes = []
         self.busy = False
         self.scanning = False
         self.scan_serial = 0
@@ -290,7 +291,7 @@ class StrixApp:
         if asset.is_file():
             self.logo = tk.PhotoImage(file=str(asset))
             self.logo_small = self.logo.subsample(
-                max(1, ( max(self.logo.width(), self.logo.height()) + 55) // 56)
+                max(1, (max(self.logo.width(), self.logo.height()) + 55) // 56)
             )
             tk.Label(
                 toolbar, image=self.logo_small, bg=PALETTE["background"], borderwidth=0
@@ -361,7 +362,7 @@ class StrixApp:
         self.preview.configure(yscrollcommand=scroll.set)
         self._replace_text(
             self.preview,
-            "Choose a Python file or project folder to preview its source.",
+            "Choose a source file or project folder to preview its code.",
         )
         self._profile(workspace)
 
@@ -535,10 +536,27 @@ class StrixApp:
             )
 
     def _mode_changed(self, *_args):
-        if not self.more.get() or self.mode.get() == 1:
+        javascript = (
+            self.loaded_path
+            and not self.is_folder
+            and self.loaded_path.suffix.lower() not in PYTHON_SUFFIXES
+        )
+        if javascript:
+            hint = (
+                "Encodes strings; keeps original identifiers."
+                if not self.more.get()
+                else "Renames local identifiers and encodes strings."
+                if self.mode.get() == 1
+                else "Encodes strings and numbers; transforms control flow."
+                if self.mode.get() == 2
+                else "Adds shorter string fragments, stronger flow transforms and decoys."
+            )
+        elif not self.more.get() or self.mode.get() == 1:
             hint = "Lightweight constant encoding."
         elif self.is_folder:
-            hint = "Preserves imports and annotations. Runtime guards are off."
+            hint = (
+                "Preserves public APIs. TS/JSX emit JavaScript. Python guards are off."
+            )
         elif self.mode.get() == 2:
             hint = "Encodes literals and transforms identifiers."
         else:
@@ -558,8 +576,8 @@ class StrixApp:
             return
         path = filedialog.askopenfilename(
             parent=self.root,
-            title="Choose Python file",
-            filetypes=[("Python source", "*.py *.pyw"), ("All files", "*")],
+            title="Choose source file",
+            filetypes=FILE_TYPES,
         )
         if path:
             self.source.set(path)
@@ -583,6 +601,8 @@ class StrixApp:
             if not path.is_file() and not path.is_dir():
                 raise ValueError("Choose an existing file or folder.")
             folder = path.is_dir()
+            if not folder:
+                require_language(path)
             if folder != self.is_folder:
                 if folder:
                     self.saved_guards = self.protect.get()
@@ -598,6 +618,7 @@ class StrixApp:
             self.switches[0].button.configure(state="disabled" if folder else "normal")
             self.switches[0].button.sync()
             self._mode_changed()
+            self._sync_language_controls()
             if folder:
                 self.scanning = True
                 self.tree.delete(*self.tree.get_children())
@@ -640,7 +661,7 @@ class StrixApp:
         self.build_button.configure(state="normal")
         self.tree.delete(*self.tree.get_children())
         inserted = set()
-        for relative in manifest.python_files:
+        for relative in manifest.source_files:
             parent = ""
             for index, part in enumerate(relative.parts):
                 iid = Path(*relative.parts[: index + 1]).as_posix()
@@ -648,16 +669,16 @@ class StrixApp:
                     self.tree.insert(parent, "end", iid=iid, text=part, open=index == 0)
                     inserted.add(iid)
                 parent = iid
-        count = len(manifest.python_files)
+        count = len(manifest.source_files)
         self.file_meta.set(
-            f"{count:,} Python files · {len(manifest.files) - count:,} other files"
+            f"{count:,} source files · {len(manifest.files) - count:,} supporting files"
         )
         if count:
-            first = manifest.python_files[0].as_posix()
+            first = manifest.source_files[0].as_posix()
             self.tree.selection_set(first)
             self.tree.see(first)
             try:
-                self._preview_file(path / manifest.python_files[0])
+                self._preview_file(path / manifest.source_files[0])
                 self.status.set(
                     "Ready. Folder structure and supporting files will be preserved."
                 )
@@ -673,9 +694,11 @@ class StrixApp:
                 self._error(str(error))
         else:
             self._replace_text(
-                self.preview, "This folder contains no Python source files."
+                self.preview, "This folder contains no supported source files."
             )
-            self.status.set("Choose a folder containing .py or .pyw files.")
+            self.status.set(
+                "Choose a folder containing Python, JavaScript or TypeScript."
+            )
             self.build_button.configure(state="disabled")
 
     def _tree_selected(self, _event):
@@ -697,14 +720,13 @@ class StrixApp:
 
     def _preview_file(self, path):
         file_size = path.stat().st_size
-        with tokenize.open(path) as stream:
-            source = stream.read(2_000_000)
-        if file_size <= 2_000_000:
+        source = read_source(path, limit=2_000_000)
+        if file_size <= 2_000_000 and path.suffix.lower() in PYTHON_SUFFIXES:
             ast.parse(source, filename=str(path))
         text = source[:40000]
         if len(source) > 40000 or file_size > 2_000_000:
             text += "\n\nPreview shortened. The complete file will be compiled."
-        self._replace_text(self.preview, text or "Empty Python file")
+        self._replace_text(self.preview, text or "Empty source file")
         if not reduced_motion(self.preview):
             self.preview.configure(
                 fg=mix(PALETTE["field"], PALETTE["text"], 0.8),
@@ -743,8 +765,8 @@ class StrixApp:
         path = filedialog.asksaveasfilename(
             parent=self.root,
             title="Choose output file",
-            defaultextension=".py",
-            filetypes=[("Python script", "*.py")],
+            defaultextension=current.suffix if current else ".py",
+            filetypes=FILE_TYPES,
             confirmoverwrite=False,
             initialdir=str(current.parent) if current else None,
             initialfile=current.name if current else "protected.py",
@@ -813,20 +835,36 @@ class StrixApp:
             widget.configure(state=state)
             if isinstance(widget, Action):
                 widget.sync()
-        if self.is_folder:
-            self.switches[0].button.configure(state="disabled")
-            self.switches[0].button.sync()
+        self._sync_language_controls()
         self.cancel_button.configure(state="normal" if busy else "disabled")
         self.build_button.configure(text="Obfuscating..." if busy else "Obfuscate")
         self.cancel_button.sync()
+
+    def _sync_language_controls(self):
+        python = (
+            self.is_folder
+            or self.loaded_path is None
+            or self.loaded_path.suffix.lower() in PYTHON_SUFFIXES
+        )
+        for index in (0, 1):
+            disabled = self.busy or not python or (index == 0 and self.is_folder)
+            self.switches[index].button.configure(
+                state="disabled" if disabled else "normal"
+            )
+            self.switches[index].button.sync()
+        for button, _ in self.style_buttons:
+            button.configure(state="normal" if python and not self.busy else "disabled")
+            button.sync()
 
     def cancel_build(self):
         if not self.busy:
             return
         self.cancel.set()
-        if self.process is not None and self.process.poll() is None:
-            with suppress(OSError):
-                self.process.terminate()
+        for proc in [self.process, *self.processes]:
+            if proc is not None and proc.poll() is None:
+                with suppress(OSError):
+                    proc.terminate()
+        self.processes.clear()
         self.status.set("Cancelling. No unfinished build will be published.")
 
     def _poll(self):
@@ -845,6 +883,8 @@ class StrixApp:
                         self._error(message)
                 elif kind == "process":
                     self.process = value
+                    self.processes = [p for p in self.processes if p.poll() is None]
+                    self.processes.append(value)
                     if self.cancel.is_set() and value.poll() is None:
                         with suppress(OSError):
                             value.terminate()
@@ -858,6 +898,7 @@ class StrixApp:
                 elif kind in ("done", "error", "cancelled"):
                     self.busy = False
                     self.process = None
+                    self.processes.clear()
                     self.progress.finish(success=kind == "done")
                     self._set_busy(False)
                     if kind == "done":
@@ -931,8 +972,8 @@ class StrixApp:
         self._replace_text(
             text,
             "Choose a file or a project folder, select an output path, then Obfuscate.\n\n"
-            "Folder builds preserve directory structure, supporting files, module names, exports and annotations. Virtual environments, version control, build output and caches are excluded. Symbolic links are skipped. Single-file runtime guards are off for folders.\n\n"
-            f"Run generated files with Python {VER}. Editing their contents invalidates the payload. Existing output paths are never overwritten.\n\n"
+            "Python, JavaScript, TypeScript and JSX/TSX are supported. Folder builds preserve supporting files and public APIs. TypeScript/JSX emit JavaScript; relative TS/JSX imports are updated. Dependencies and declarations are copied; source maps, caches and build folders are excluded.\n\n"
+            f"Python output requires Python {VER}. JS/TS builds require Node.js 18+ and the local npm engine. Python guard/style/builtin switches apply only to Python. JSX uses tsconfig factories (React.createElement by default). Existing desktop output paths are never overwritten.\n\n"
             "Ctrl+O: file    Ctrl+Shift+O: folder\nCtrl+Shift+S: output    Ctrl+Enter: obfuscate    Esc: cancel",
         )
         Switch(window, "Reduce motion", self.reduced_motion).pack(

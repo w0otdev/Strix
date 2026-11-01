@@ -131,11 +131,47 @@ def build_guard():
     )
 
 
+def _build_loader_and_parts(la, ll, m1, m2, compiled):
+    m1h = m1.encode().hex()
+    m2h = m2.encode().hex()
+    lc = [
+        "try:",
+        f"    with {QN('bd')}[{S('open')}]({QN('globals')}()[{S('__file__')}], {S('rb')}) as _src_:",
+        f"        _ow_ = {QN('getattr')}({QN('getattr')}(_src_, {S('read')})(), {S('replace')})(b'\\r\\n', b'\\n')",
+        f"    _i1_ = {QN('getattr')}(_ow_, {S('index')})({QN('getattr')}({QN('bytes')}, {S('fromhex')})({S(m1h)}))",
+        f"    _i2_ = {QN('getattr')}(_ow_, {S('index')})({QN('getattr')}({QN('bytes')}, {S('fromhex')})({S(m2h)}), _i1_ + {I(len(m1))})",
+        f"    _mt_ = _ow_[:_i1_] + _ow_[_i2_ + {I(len(m2))}:]",
+        f"    _k1 = {QN('getattr')}({QN('b64')}, {S('b85decode')})({ll})",
+        f"    _hb_ = {QN('getattr')}({QN('hl')}, {S('sha256')})(_mt_)",
+        "    _Kl_ = []",
+        f"    for _nn_ in range(({QN('len')}(_k1) + 31) // 32):",
+        "        _hc_ = _hb_.copy()",
+        f"        _hc_.update({QN('getattr')}({QN('int')}(_nn_), {S('to_bytes')})(8, {S('big')}))",
+        "        _Kl_.append(_hc_.digest())",
+        "    _Kq_ = b''.join(_Kl_)",
+        f"    _k2 = {QN('bytes')}([(_b_ ^ _Kq_[_iX_]) for _iX_, _b_ in enumerate(_k1)])",
+        f"    _k3 = {QN('getattr')}({QN('bz')}, {S('decompress')})(_k2)",
+        f"    _k4 = {QN('getattr')}({QN('lm')}, {S('decompress')})(_k3)",
+        f"    _k5 = {QN('getattr')}({QN('mz')}, {S('decompress')})(_k4)",
+        f"    _k6 = {QN('getattr')}({QN('ms')}, {S('loads')})(_k5)",
+        "except Exception:",
+        f"    {QN('die')}()",
+        f"del {ll},_ow_,_mt_,_hb_,_Kl_,_Kq_,_k1,_k2,_k3,_k4,_k5",
+        f"{QN('exec')}({QN('globals')}().pop({S('_k6')}), {QN('globals')}())",
+    ]
+    material = (
+        "#!/usr/bin/python" + VER + "\n" + "\n".join(la) + "\n# \n" + "\n".join(lc) + "\n"
+    )
+    z3 = bz2.compress(lzma.compress(zlib.compress(compiled)))
+    ks = make_ks(material.encode("utf-8"), len(z3))
+    s85 = base64.b85encode(bytes(a ^ b for a, b in zip(z3, ks, strict=True)))
+    parts = [s85[i : i + 1500] for i in range(0, len(s85), 1500)]
+    return lc, parts
+
+
 def build_runtime_legacy(compiled, protect=True):
     m1 = mkmarker()
     m2 = mkmarker()
-    m1h = m1.encode().hex()
-    m2h = m2.encode().hex()
 
     la = []
     a = la.append
@@ -211,68 +247,12 @@ def build_runtime_legacy(compiled, protect=True):
         )
         a(build_antidump())
 
-    A = "\n".join(la)
-
-    lc = []
-    ca = lc.append
-    ca("try:")
-    ca(
-        f"    with {QN('bd')}[{S('open')}]({QN('globals')}()[{S('__file__')}], {S('rb')}) as _src_:"
-    )
-    ca(
-        f"        _ow_ = {QN('getattr')}({QN('getattr')}(_src_, {S('read')})(), {S('replace')})(b'\\r\\n', b'\\n')"
-    )
-    ca(
-        f"    _i1_ = {QN('getattr')}(_ow_, {S('index')})({QN('getattr')}({QN('bytes')}, {S('fromhex')})({S(m1h)}))"
-    )
-    ca(
-        f"    _i2_ = {QN('getattr')}(_ow_, {S('index')})({QN('getattr')}({QN('bytes')}, {S('fromhex')})({S(m2h)}), _i1_ + {I(len(m1))})"
-    )
-    ca(f"    _mt_ = _ow_[:_i1_] + _ow_[_i2_ + {I(len(m2))}:]")
-    ca(f"    _A_ = {QN('getattr')}({QN('b64')}, {S('b85decode')})(_pp_)")
-    ca(f"    _hb_ = {QN('getattr')}({QN('hl')}, {S('sha256')})(_mt_)")
-    ca("    _Kl_ = []")
-    ca(f"    for _nn_ in range(({QN('len')}(_A_) + 31) // 32):")
-    ca("        _hc_ = _hb_.copy()")
-    ca(
-        f"        _hc_.update({QN('getattr')}({QN('int')}(_nn_), {S('to_bytes')})(8, {S('big')}))"
-    )
-    ca("        _Kl_.append(_hc_.digest())")
-    ca("    _Kq_ = b''.join(_Kl_)")
-    ca(f"    _B_ = {QN('bytes')}([(_b_ ^ _Kq_[_iX_]) for _iX_, _b_ in enumerate(_A_)])")
-    ca(f"    _C_ = {QN('getattr')}({QN('bz')}, {S('decompress')})(_B_)")
-    ca(f"    _D_ = {QN('getattr')}({QN('lm')}, {S('decompress')})(_C_)")
-    ca(f"    _E_ = {QN('getattr')}({QN('mz')}, {S('decompress')})(_D_)")
-    ca(f"    _F_ = {QN('getattr')}({QN('ms')}, {S('loads')})(_E_)")
-    ca("except Exception:")
-    ca(f"    {QN('die')}()")
-    ca("")
-    ca("del _ow_, _mt_, _hb_, _Kl_, _Kq_, _pp_, _A_, _B_, _C_, _D_, _E_")
-    ca(f"{QN('exec')}({QN('globals')}().pop({S('_F_')}), {QN('globals')}())")
-    C = "\n".join(lc)
-
-    material = "#!/usr/bin/python" + VER + "\n" + A + "\n# \n" + C + "\n"
-    z1 = zlib.compress(compiled)
-    z2 = lzma.compress(z1)
-    z3 = bz2.compress(z2)
-    ks = make_ks(material.encode("utf-8"), len(z3))
-    xored = bytes(a ^ b for a, b in zip(z3, ks, strict=True))
-    s85 = base64.b85encode(xored)
-
-    chunk = 1500
-    parts = [s85[i : i + chunk] for i in range(0, len(s85), chunk)]
-
-    pnames = []
-    for _ in parts:
-        pname = rn()
-        pnames.append(pname)
-
-    refs = []
-    for pname in pnames:
-        refs.append(
-            f"{QN('getattr')}({pname} , {S('to_bytes')})(({QN('getattr')}({pname} , {S('bit_length')})() + 7) // 8, {S('big')})[1:]"
-        )
-
+    lc, parts = _build_loader_and_parts(la, "_pp_", m1, m2, compiled)
+    pnames = [rn() for _ in parts]
+    refs = [
+        f"{QN('getattr')}({pname} , {S('to_bytes')})(({QN('getattr')}({pname} , {S('bit_length')})() + 7) // 8, {S('big')})[1:]"
+        for pname in pnames
+    ]
     pc = "\n".join(
         f"{pname} = {int.from_bytes(bytes([1]) + part, 'big')}"
         for pname, part in zip(pnames, parts, strict=True)
@@ -284,8 +264,6 @@ def build_runtime_legacy(compiled, protect=True):
 def build_runtime(compiled, protect=True, *, importable=False):
     m1 = mkmarker()
     m2 = mkmarker()
-    m1h = m1.encode().hex()
-    m2h = m2.encode().hex()
 
     la = []
     a = la.append
@@ -428,60 +406,9 @@ def build_runtime(compiled, protect=True, *, importable=False):
         )
         a(build_antidump())
 
-    A = "\n".join(la)
     ll = mine.nl()
-    lc = []
-    ca = lc.append
-    ca("try:")
-    ca(
-        f"    with {QN('bd')}[{S('open')}]({QN('globals')}()[{S('__file__')}], {S('rb')}) as _src_:"
-    )
-    ca(
-        f"        _ow_ = {QN('getattr')}({QN('getattr')}(_src_, {S('read')})(), {S('replace')})(b'\\r\\n', b'\\n')"
-    )
-    ca(
-        f"    _i1_ = {QN('getattr')}(_ow_, {S('index')})({QN('getattr')}({QN('bytes')}, {S('fromhex')})({S(m1h)}))"
-    )
-    ca(
-        f"    _i2_ = {QN('getattr')}(_ow_, {S('index')})({QN('getattr')}({QN('bytes')}, {S('fromhex')})({S(m2h)}), _i1_ + {I(len(m1))})"
-    )
-    ca(f"    _mt_ = _ow_[:_i1_] + _ow_[_i2_ + {I(len(m2))}:]")
-    ca(f"    _k1 = {QN('getattr')}({QN('b64')}, {S('b85decode')})({ll})")
-    ca(f"    _hb_ = {QN('getattr')}({QN('hl')}, {S('sha256')})(_mt_)")
-    ca("    _Kl_ = []")
-    ca(f"    for _nn_ in range(({QN('len')}(_k1) + 31) // 32):")
-    ca("        _hc_ = _hb_.copy()")
-    ca(
-        f"        _hc_.update({QN('getattr')}({QN('int')}(_nn_), {S('to_bytes')})(8, {S('big')}))"
-    )
-    ca("        _Kl_.append(_hc_.digest())")
-    ca("    _Kq_ = b''.join(_Kl_)")
-    ca(f"    _k2 = {QN('bytes')}([(_b_ ^ _Kq_[_iX_]) for _iX_, _b_ in enumerate(_k1)])")
-    ca(f"    _k3 = {QN('getattr')}({QN('bz')}, {S('decompress')})(_k2)")
-    ca(f"    _k4 = {QN('getattr')}({QN('lm')}, {S('decompress')})(_k3)")
-    ca(f"    _k5 = {QN('getattr')}({QN('mz')}, {S('decompress')})(_k4)")
-    ca(f"    _k6 = {QN('getattr')}({QN('ms')}, {S('loads')})(_k5)")
-    ca("except Exception:")
-    ca(f"    {QN('die')}()")
-    ca(f"del {ll},_ow_,_mt_,_hb_,_Kl_,_Kq_,_k1,_k2,_k3,_k4,_k5")
-    ca(f"{QN('exec')}({QN('globals')}().pop({S('_k6')}), {QN('globals')}())")
-    C = "\n".join(lc)
-
-    material = "#!/usr/bin/python" + VER + "\n" + A + "\n# \n" + C + "\n"
-    z1 = zlib.compress(compiled)
-    z2 = lzma.compress(z1)
-    z3 = bz2.compress(z2)
-    ks = make_ks(material.encode("utf-8"), len(z3))
-    xored = bytes(b ^ k for b, k in zip(z3, ks, strict=True))
-    s85 = base64.b85encode(xored)
-
-    chunk = 1500
-    parts = [s85[i : i + chunk] for i in range(0, len(s85), chunk)]
-
-    pnames = []
-    for _ in parts:
-        nm = mine.nl()
-        pnames.append(nm)
+    lc, parts = _build_loader_and_parts(la, ll, m1, m2, compiled)
+    pnames = [mine.nl() for _ in parts]
     pc = "\n".join(
         f"{nm} = {int.from_bytes(bytes([1]) + part, 'big')}"
         for nm, part in zip(pnames, parts, strict=True)

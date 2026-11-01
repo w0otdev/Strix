@@ -1,0 +1,11 @@
+{
+  "name": "strix-javascript-engine",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local JavaScript and TypeScript compilation engine for Strix",
+  "engines": {"node": ">=18"},
+  "dependencies": {
+    "javascript-obfuscator": "5.9.0",
+    "typescript": "5.9.3"
+  }
+}

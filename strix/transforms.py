@@ -213,77 +213,139 @@ def obf_vars(source):
                                 method_names.add(n.id)
 
     not_rename = attr_names | kwarg_names | method_names
-    aliases = {}
-    for name in declared:
-        if name in aliases or name in module_names or name in BUILTINS:
-            continue
+
+    def _can_rename(name, is_local=False):
+        if name in module_names or name in BUILTINS:
+            return False
         if name.startswith("__") or name in ("self", "cls", "_"):
-            continue
-        if name in not_rename:
-            continue
-        aliases[name] = hz()
+            return False
+        if is_local:
+            return name not in kwarg_names and name not in method_names
+        return name not in not_rename
+
+    aliases = {name: hz() for name in declared if _can_rename(name)}
+
+    def _fn_locals(fn_node):
+        bound = set()
+        shared = set()
+        stack = list(fn_node.body)
+        for arg in (
+            *fn_node.args.posonlyargs,
+            *fn_node.args.args,
+            *fn_node.args.kwonlyargs,
+        ):
+            bound.add(arg.arg)
+        if fn_node.args.vararg:
+            bound.add(fn_node.args.vararg.arg)
+        if fn_node.args.kwarg:
+            bound.add(fn_node.args.kwarg.arg)
+        while stack:
+            cur = stack.pop()
+            if isinstance(cur, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                bound.add(cur.name)
+                continue
+            if isinstance(cur, (ast.Global, ast.Nonlocal)):
+                shared.update(cur.names)
+            elif isinstance(cur, ast.Name) and isinstance(cur.ctx, ast.Store):
+                bound.add(cur.id)
+            elif isinstance(cur, ast.ExceptHandler) and cur.name:
+                bound.add(cur.name)
+            elif isinstance(cur, (ast.MatchAs, ast.MatchStar)) and cur.name:
+                bound.add(cur.name)
+            elif isinstance(cur, ast.MatchMapping) and cur.rest:
+                bound.add(cur.rest)
+            stack.extend(ast.iter_child_nodes(cur))
+        return bound - shared
 
     class Ren(ast.NodeTransformer):
+        def __init__(self, scope):
+            self.scope = scope
+
         def visit_Name(self, node):
-            if node.id in aliases:
-                node.id = aliases[node.id]
+            if node.id in self.scope:
+                node.id = self.scope[node.id]
+            return node
+
+        def _visit_fn(self, node):
+            if node.name in self.scope:
+                node.name = self.scope[node.name]
+            node.decorator_list = [self.visit(d) for d in node.decorator_list]
+            node.args.defaults = [self.visit(d) for d in node.args.defaults]
+            node.args.kw_defaults = [
+                self.visit(d) if d is not None else None for d in node.args.kw_defaults
+            ]
+            child_scope = dict(self.scope)
+            for name in _fn_locals(node):
+                if _can_rename(name, is_local=True):
+                    child_scope[name] = hz()
+            prev = self.scope
+            self.scope = child_scope
+            try:
+                node.args = self.visit(node.args)
+                node.body = [self.visit(stmt) for stmt in node.body]
+            finally:
+                self.scope = prev
             return node
 
         def visit_FunctionDef(self, node):
-            if node.name in aliases:
-                node.name = aliases[node.name]
-            self.generic_visit(node)
-            return node
+            return self._visit_fn(node)
 
         def visit_AsyncFunctionDef(self, node):
-            if node.name in aliases:
-                node.name = aliases[node.name]
-            self.generic_visit(node)
-            return node
+            return self._visit_fn(node)
 
         def visit_ClassDef(self, node):
-            if node.name in aliases:
-                node.name = aliases[node.name]
-            self.generic_visit(node)
+            if node.name in self.scope:
+                node.name = self.scope[node.name]
+            node.bases = [self.visit(b) for b in node.bases]
+            node.keywords = [self.visit(k) for k in node.keywords]
+            node.decorator_list = [self.visit(d) for d in node.decorator_list]
+            node.body = [
+                self.visit(sub)
+                if isinstance(
+                    sub, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+                )
+                else sub
+                for sub in node.body
+            ]
             return node
 
         def visit_arg(self, node):
-            if node.arg in aliases:
-                node.arg = aliases[node.arg]
+            if node.arg in self.scope:
+                node.arg = self.scope[node.arg]
             return node
 
         def visit_Global(self, node):
-            node.names = [aliases.get(x, x) for x in node.names]
+            node.names = [self.scope.get(x, x) for x in node.names]
             return node
 
         def visit_Nonlocal(self, node):
-            node.names = [aliases.get(x, x) for x in node.names]
+            node.names = [self.scope.get(x, x) for x in node.names]
             return node
 
         def visit_ExceptHandler(self, node):
-            if node.name and node.name in aliases:
-                node.name = aliases[node.name]
+            if node.name and node.name in self.scope:
+                node.name = self.scope[node.name]
             self.generic_visit(node)
             return node
 
         def visit_MatchAs(self, node):
-            if node.name and node.name in aliases:
-                node.name = aliases[node.name]
+            if node.name and node.name in self.scope:
+                node.name = self.scope[node.name]
             self.generic_visit(node)
             return node
 
         def visit_MatchStar(self, node):
-            if node.name and node.name in aliases:
-                node.name = aliases[node.name]
+            if node.name and node.name in self.scope:
+                node.name = self.scope[node.name]
             return node
 
         def visit_MatchMapping(self, node):
-            if node.rest and node.rest in aliases:
-                node.rest = aliases[node.rest]
+            if node.rest and node.rest in self.scope:
+                node.rest = self.scope[node.rest]
             self.generic_visit(node)
             return node
 
-    tree = Ren().visit(tree)
+    tree = Ren(aliases).visit(tree)
     ast.fix_missing_locations(tree)
     return ast.unparse(tree)
 
