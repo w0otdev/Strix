@@ -52,28 +52,27 @@ def build_antidump():
     def T(v):
         return f"{bd}[{S(v)}]"
 
-    bs = S("\\")
-    sl = S("/")
     ln = rn()
     L = []
     a = L.append
 
     a(f"for _n_ in ({', '.join(S(x) for x in KILL_MODULES)}):")
     a(f"    if _n_ in {ga}({sm}, {S('modules')}): {die}()")
-    a(
-        f"for _en_ in ({', '.join(S(x) for x in (S('PYTHONBREAKPOINT'), S('PYTHONPYCACHEPREFIX')))}):"
-    )
+    a(f"for _en_ in ({S('PYTHONBREAKPOINT')}, {S('PYTHONPYCACHEPREFIX')}):")
     a(f"    if {S('breakpoint')} in {osm}.environ.get(_en_, {S('')}).lower(): {die}()")
     a("try:")
     a(f"    _m_ = {ga}({sm}, {S('monitoring')})")
-    a(f"    _ev_ = {ga}(_m_, {S('get_events')})()")
-    a("    for _tid_ in _ev_:")
-    a(f"        if _ev_[_tid_]: {die}()")
+    a(f"    _ge_ = {ga}(_m_, {S('get_events')})")
+    a("    for _tid_ in (0, 1, 2, 3, 4, 5):")
+    a(f"        if _ge_(_tid_): {die}()")
     a("except Exception:")
     a("    pass")
     a("try:")
     a(
         f"    if {T('type')}({ga}({ms}, {S('loads')})) != {T('type')}({T('len')}): {die}()"
+    )
+    a(
+        f"    if {ga}({ga}({ms}, {S('loads')}), {S('__name__')}, {S('')}) != {S('loads')}: {die}()"
     )
     a(
         f"    if {T('type')}({ga}({ms}, {S('loads')})) != {T('type')}({ga}({ms}, {S('dumps')})): {die}()"
@@ -85,6 +84,7 @@ def build_antidump():
         f"    if {T('type')}({ga}({ms}, {S('dump')})) != {T('type')}({T('len')}): {die}()"
     )
     a(f"except Exception: {die}()")
+    a(f"if {T('type')}({T('exec')}) != {T('type')}({T('len')}): {die}()")
     a(f"if {T('type')}({T('compile')}) != {T('type')}({T('len')}): {die}()")
     a(f"if {T('type')}({T('__import__')}) != {T('type')}({T('len')}): {die}()")
     a(
@@ -93,31 +93,19 @@ def build_antidump():
     a(
         f"if {T('type')}({ga}({sm}, {S('setprofile')})) != {T('type')}({T('len')}): {die}()"
     )
-    a("try:")
-    a(
-        f"    _fk_ = {T('getattr')}({T('__import__')}({S('types')}), {S('ModuleType')})({S('marshal')})"
-    )
-    a(f"    for _at_ in ({S('loads')}, {S('dumps')}, {S('load')}, {S('dump')}):")
-    a(f"        {T('setattr')}(_fk_, _at_, (lambda *_v_: {die}()))")
-    a(f"    {ga}({sm}, {S('modules')})[{S('marshal')}] = _fk_")
-    a(f"except Exception: {die}()")
     a(f"def {ln}():")
+    a(f"    _rp_ = {ga}({ga}({osm}, {S('path')}), {S('realpath')})")
     a(f"    _me_ = {ga}(({QN('globals')})(), {S('get')})({S('__file__')}, {S('')})")
-    a(
-        f"    _me_ = {ga}({ga}(_me_, {S('replace')})({bs}, {sl}), {S('rsplit')})({sl}, 1)[-1]"
-    )
+    a(f"    _me_ = _rp_(_me_) if _me_ else {S('')}")
     a(f"    _af_ = {ga}({sm}, {S('argv')})[0] if {ga}({sm}, {S('argv')}) else {S('')}")
-    a(
-        f"    _af_ = {ga}({ga}(_af_, {S('replace')})({bs}, {sl}), {S('rsplit')})({sl}, 1)[-1]"
-    )
-    a(f"    if _me_ != _af_: {die}()")
+    a(f"    _af_ = _rp_(_af_) if _af_ else {S('')}")
+    a(f"    if not _me_ or _me_ != _af_: {die}()")
     a(f"    _f_ = {ga}({sm}, {S('_getframe')})()")
     a("    while _f_ is not None:")
     a(f"        _c_ = {ga}({ga}(_f_, {S('f_code')}), {S('co_filename')}) or {S('')}")
     a(
-        f"        _c_ = {ga}({ga}(_c_, {S('replace')})({bs}, {sl}), {S('rsplit')})({sl}, 1)[-1]"
+        f"        if _c_ != {S(INNER_NAME)} and (_rp_(_c_) if _c_ else {S('')}) != _me_: {die}()"
     )
-    a(f"        if _c_ != _me_ and _c_ != {S(INNER_NAME)}: {die}()")
     a(f"        _f_ = {ga}(_f_, {S('f_back')})")
     a(f"{ln}()")
     return "\n".join(L)
@@ -133,26 +121,13 @@ def build_guard():
             f"{QN('getattr')}({QN('sysm')},{S('settrace')})(None)\n"
             f"try:\n"
             f"    {QN('getattr')}({QN('sysm')},{S('setprofile')})(None)\n"
-            f"    if {QN('getattr')}({QN('getattr')}({QN('sysm')},{S('monitoring')}),{S('get_events')})():\n"
-            f"        {QN('die')}()\n"
+            f"    _ge_ = {QN('getattr')}({QN('getattr')}({QN('sysm')},{S('monitoring')}),{S('get_events')})\n"
+            f"    for _tid_ in (0, 1, 2, 3, 4, 5):\n"
+            f"        if _ge_(_tid_):\n"
+            f"            {QN('die')}()\n"
             f"except Exception:\n"
             f"    pass\n"
         )
-    )
-
-
-def build_antihook():
-    return (
-        f"if {QN('getattr')}({QN('sysm')}, {S('gettrace')})() is not None: {QN('die')}()\n"
-        f"{QN('getattr')}({QN('sysm')}, {S('settrace')})(None)\n"
-        f"{QN('getattr')}({QN('sysm')}, {S('setprofile')})(None)\n"
-        f"try:\n"
-        f"    if {QN('getattr')}({QN('getattr')}({QN('sysm')},{S('monitoring')}),{S('get_events')})():\n"
-        f"        {QN('die')}()\n"
-        f"except Exception:\n"
-        f"    pass\n"
-        f"for _n_ in ({', '.join(S(x) for x in KILL_MODULES)}):\n"
-        f"    if _n_ in {QN('sysm')}.modules: {QN('die')}()\n"
     )
 
 
@@ -186,7 +161,7 @@ def build_runtime_legacy(compiled, protect=True):
     a(f"{QN('vars')} = {QN('bd')}['vars']")
     a(f"{QN('globals')} = {QN('bd')}['globals']")
     a(
-        f"{QN('dec')} = (lambda {QN('join')},{QN('chr')},_k_,_o_: (lambda _s_: {QN('join')}({QN('chr')}(((_x_ - _o_) ^ _k_)) for _x_ in _s_)))({QN('join')},{QN('chr')},{ctx.K},{OFF})"
+        f"{QN('dec')} = (lambda {QN('join')},{QN('chr')},_k_,_o_: (lambda _s_: {QN('join')}({QN('chr')}((_x_ - _o_) ^ ((_k_ + _i_ * 0x5BD1E995) & 0xFFFFFFFF)) for _i_, _x_ in enumerate(_s_))))({QN('join')},{QN('chr')},{ctx.K},{OFF})"
     )
 
     a(f"def {QN('die')}():")
@@ -244,7 +219,9 @@ def build_runtime_legacy(compiled, protect=True):
     ca(
         f"    with {QN('bd')}[{S('open')}]({QN('globals')}()[{S('__file__')}], {S('rb')}) as _src_:"
     )
-    ca(f"        _ow_ = {QN('getattr')}(_src_, {S('read')})()")
+    ca(
+        f"        _ow_ = {QN('getattr')}({QN('getattr')}(_src_, {S('read')})(), {S('replace')})(b'\\r\\n', b'\\n')"
+    )
     ca(
         f"    _i1_ = {QN('getattr')}(_ow_, {S('index')})({QN('getattr')}({QN('bytes')}, {S('fromhex')})({S(m1h)}))"
     )
@@ -252,36 +229,38 @@ def build_runtime_legacy(compiled, protect=True):
         f"    _i2_ = {QN('getattr')}(_ow_, {S('index')})({QN('getattr')}({QN('bytes')}, {S('fromhex')})({S(m2h)}), _i1_ + {I(len(m1))})"
     )
     ca(f"    _mt_ = _ow_[:_i1_] + _ow_[_i2_ + {I(len(m2))}:]")
-    ca(f"    _A_ = {QN('getattr')}({QN('bz')}, {S('decompress')})(_pp_)")
-    ca(f"    _B_ = {QN('getattr')}({QN('lm')}, {S('decompress')})(_A_)")
-    ca(f"    _C_ = {QN('getattr')}({QN('mz')}, {S('decompress')})(_B_)")
-    ca(f"    _D_ = {QN('getattr')}({QN('b64')}, {S('b85decode')})(_C_)")
-    ca(f"    _Kq_ = {QN('bytes')}()")
-    ca(f"    _nn_ = {I(0)}")
-    ca(f"    while {QN('len')}(_Kq_) < {QN('len')}(_D_):")
+    ca(f"    _A_ = {QN('getattr')}({QN('b64')}, {S('b85decode')})(_pp_)")
+    ca(f"    _hb_ = {QN('getattr')}({QN('hl')}, {S('sha256')})(_mt_)")
+    ca("    _Kl_ = []")
+    ca(f"    for _nn_ in range(({QN('len')}(_A_) + 31) // 32):")
+    ca("        _hc_ = _hb_.copy()")
     ca(
-        f"        _Kq_ += {QN('getattr')}({QN('hl')}, {S('sha256')})(_mt_ + {QN('getattr')}({QN('int')}(_nn_), {S('to_bytes')})(8, {S('big')})).digest()"
+        f"        _hc_.update({QN('getattr')}({QN('int')}(_nn_), {S('to_bytes')})(8, {S('big')}))"
     )
-    ca(f"        _nn_ = _nn_ + {I(1)}")
-    ca(f"    _E_ = {QN('bytes')}([(_b_ ^ _Kq_[_iX_]) for _iX_, _b_ in enumerate(_D_)])")
+    ca("        _Kl_.append(_hc_.digest())")
+    ca("    _Kq_ = b''.join(_Kl_)")
+    ca(f"    _B_ = {QN('bytes')}([(_b_ ^ _Kq_[_iX_]) for _iX_, _b_ in enumerate(_A_)])")
+    ca(f"    _C_ = {QN('getattr')}({QN('bz')}, {S('decompress')})(_B_)")
+    ca(f"    _D_ = {QN('getattr')}({QN('lm')}, {S('decompress')})(_C_)")
+    ca(f"    _E_ = {QN('getattr')}({QN('mz')}, {S('decompress')})(_D_)")
     ca(f"    _F_ = {QN('getattr')}({QN('ms')}, {S('loads')})(_E_)")
     ca("except Exception:")
     ca(f"    {QN('die')}()")
     ca("")
-    ca("del _ow_, _mt_, _Kq_, _nn_, _pp_, _A_, _B_, _C_, _D_, _E_")
-    ca(f"{QN('exec')}(_F_, {QN('globals')}())")
+    ca("del _ow_, _mt_, _hb_, _Kl_, _Kq_, _pp_, _A_, _B_, _C_, _D_, _E_")
+    ca(f"{QN('exec')}({QN('globals')}().pop({S('_F_')}), {QN('globals')}())")
     C = "\n".join(lc)
 
     material = "#!/usr/bin/python" + VER + "\n" + A + "\n# \n" + C + "\n"
-    ks = make_ks(material.encode("utf-8"), len(compiled))
-    xored = bytes(a ^ b for a, b in zip(compiled, ks, strict=True))
-    s85 = base64.b85encode(xored)
-    z1 = zlib.compress(s85)
+    z1 = zlib.compress(compiled)
     z2 = lzma.compress(z1)
     z3 = bz2.compress(z2)
+    ks = make_ks(material.encode("utf-8"), len(z3))
+    xored = bytes(a ^ b for a, b in zip(z3, ks, strict=True))
+    s85 = base64.b85encode(xored)
 
     chunk = 1500
-    parts = [z3[i : i + chunk] for i in range(0, len(z3), chunk)]
+    parts = [s85[i : i + chunk] for i in range(0, len(s85), chunk)]
 
     pnames = []
     for _ in parts:
@@ -319,11 +298,11 @@ def build_runtime(compiled, protect=True, *, importable=False):
         f"del _vv_\n"
     )
     dec_expr = (
-        '"".join(map(lambda _m_: chr((_m_ - '
+        '"".join(chr((_m_ - '
         + str(OFF)
-        + ") ^ "
+        + ") ^ (("
         + str(ctx.K)
-        + "), "
+        + " + _i_ * 0x5BD1E995) & 0xFFFFFFFF)) for _i_, _m_ in enumerate("
         + repr(enc_seq(lock))
         + "))"
     )
@@ -358,7 +337,7 @@ def build_runtime(compiled, protect=True, *, importable=False):
 
     deca = mine.n()
     a(
-        f"({deca}) = (lambda _j_,_c_,_k_,_o_:(lambda _s_:_j_(_c_(((_x_-_o_)^_k_)) for _x_ in _s_)))(({bm['str']})().join,({bm['chr']}),{ctx.K},{OFF})"
+        f"({deca}) = (lambda _j_,_c_,_k_,_o_:(lambda _s_:_j_(_c_((_x_-_o_)^((_k_+_i_*0x5BD1E995)&0xFFFFFFFF)) for _i_,_x_ in enumerate(_s_))))(({bm['str']})().join,({bm['chr']}),{ctx.K},{OFF})"
     )
     d = deca
     g = bm["getattr"]
@@ -457,7 +436,9 @@ def build_runtime(compiled, protect=True, *, importable=False):
     ca(
         f"    with {QN('bd')}[{S('open')}]({QN('globals')}()[{S('__file__')}], {S('rb')}) as _src_:"
     )
-    ca(f"        _ow_ = {QN('getattr')}(_src_, {S('read')})()")
+    ca(
+        f"        _ow_ = {QN('getattr')}({QN('getattr')}(_src_, {S('read')})(), {S('replace')})(b'\\r\\n', b'\\n')"
+    )
     ca(
         f"    _i1_ = {QN('getattr')}(_ow_, {S('index')})({QN('getattr')}({QN('bytes')}, {S('fromhex')})({S(m1h)}))"
     )
@@ -465,41 +446,37 @@ def build_runtime(compiled, protect=True, *, importable=False):
         f"    _i2_ = {QN('getattr')}(_ow_, {S('index')})({QN('getattr')}({QN('bytes')}, {S('fromhex')})({S(m2h)}), _i1_ + {I(len(m1))})"
     )
     ca(f"    _mt_ = _ow_[:_i1_] + _ow_[_i2_ + {I(len(m2))}:]")
-    ca(f"    _k1 = {QN('getattr')}({QN('bz')}, {S('decompress')})({ll})")
-    ca(f"    _k2 = {QN('getattr')}({QN('lm')}, {S('decompress')})(_k1)")
-    ca(f"    _k3 = {QN('getattr')}({QN('mz')}, {S('decompress')})(_k2)")
-    ca(f"    _k4 = {QN('getattr')}({QN('b64')}, {S('b85decode')})(_k3)")
-    ca(f"    _Kq_ = {QN('bytes')}()")
-    ca(f"    _nn_ = {I(0)}")
-    ca(f"    while {QN('len')}(_Kq_) < {QN('len')}(_k4):")
+    ca(f"    _k1 = {QN('getattr')}({QN('b64')}, {S('b85decode')})({ll})")
+    ca(f"    _hb_ = {QN('getattr')}({QN('hl')}, {S('sha256')})(_mt_)")
+    ca("    _Kl_ = []")
+    ca(f"    for _nn_ in range(({QN('len')}(_k1) + 31) // 32):")
+    ca("        _hc_ = _hb_.copy()")
     ca(
-        f"        _Kq_ += {QN('getattr')}({QN('hl')}, {S('sha256')})(_mt_ + {QN('getattr')}({QN('int')}(_nn_), {S('to_bytes')})(8, {S('big')})).digest()"
+        f"        _hc_.update({QN('getattr')}({QN('int')}(_nn_), {S('to_bytes')})(8, {S('big')}))"
     )
-    ca(f"        _nn_ = _nn_ + {I(1)}")
-    ca(f"    _k5 = {QN('bytes')}([(_b_ ^ _Kq_[_iX_]) for _iX_, _b_ in enumerate(_k4)])")
+    ca("        _Kl_.append(_hc_.digest())")
+    ca("    _Kq_ = b''.join(_Kl_)")
+    ca(f"    _k2 = {QN('bytes')}([(_b_ ^ _Kq_[_iX_]) for _iX_, _b_ in enumerate(_k1)])")
+    ca(f"    _k3 = {QN('getattr')}({QN('bz')}, {S('decompress')})(_k2)")
+    ca(f"    _k4 = {QN('getattr')}({QN('lm')}, {S('decompress')})(_k3)")
+    ca(f"    _k5 = {QN('getattr')}({QN('mz')}, {S('decompress')})(_k4)")
     ca(f"    _k6 = {QN('getattr')}({QN('ms')}, {S('loads')})(_k5)")
     ca("except Exception:")
     ca(f"    {QN('die')}()")
-    ca(f"del {ll},_ow_,_mt_,_Kq_,_nn_,_k1,_k2,_k3,_k4,_k5")
-    if importable:
-        ca(f"{QN('exec')}(_k6, {QN('globals')}())")
-    else:
-        ca("try:")
-        ca(f"    {QN('exec')}(_k6, {QN('globals')}())")
-        ca("except Exception:")
-        ca(f"    {QN('die')}()")
+    ca(f"del {ll},_ow_,_mt_,_hb_,_Kl_,_Kq_,_k1,_k2,_k3,_k4,_k5")
+    ca(f"{QN('exec')}({QN('globals')}().pop({S('_k6')}), {QN('globals')}())")
     C = "\n".join(lc)
 
     material = "#!/usr/bin/python" + VER + "\n" + A + "\n# \n" + C + "\n"
-    ks = make_ks(material.encode("utf-8"), len(compiled))
-    xored = bytes(b ^ k for b, k in zip(compiled, ks, strict=True))
-    s85 = base64.b85encode(xored)
-    z1 = zlib.compress(s85)
+    z1 = zlib.compress(compiled)
     z2 = lzma.compress(z1)
     z3 = bz2.compress(z2)
+    ks = make_ks(material.encode("utf-8"), len(z3))
+    xored = bytes(b ^ k for b, k in zip(z3, ks, strict=True))
+    s85 = base64.b85encode(xored)
 
     chunk = 1500
-    parts = [z3[i : i + chunk] for i in range(0, len(z3), chunk)]
+    parts = [s85[i : i + chunk] for i in range(0, len(s85), chunk)]
 
     pnames = []
     for _ in parts:
@@ -538,16 +515,15 @@ def _save_annotations(source):
     return ast.unparse(ast.fix_missing_locations(tree)), annotations
 
 
-def _restore_annotations(source, annotations):
-    class Restore(ast.NodeTransformer):
-        def visit_Name(self, node):
-            return annotations.get(node.id, node)
-
-    return ast.unparse(ast.fix_missing_locations(Restore().visit(ast.parse(source))))
-
-
-def _module_prefix(source):
+def _module_prefix(source, annotations=None):
     tree = ast.parse(source)
+    if annotations:
+
+        class Restore(ast.NodeTransformer):
+            def visit_Name(self, node):
+                return annotations.get(node.id, node)
+
+        tree = ast.fix_missing_locations(Restore().visit(tree))
     prefix = []
     if ast.get_docstring(tree) is not None:
         prefix.append(tree.body.pop(0))
@@ -557,7 +533,12 @@ def _module_prefix(source):
         and tree.body[0].module == "__future__"
     ):
         prefix.append(tree.body.pop(0))
-    return ast.unparse(ast.Module(body=prefix, type_ignores=[])), ast.unparse(tree)
+    if not prefix and not annotations:
+        return "", source
+    return (
+        ast.unparse(ast.Module(body=prefix, type_ignores=[])) if prefix else "",
+        ast.unparse(tree),
+    )
 
 
 def pipeline(
@@ -591,19 +572,12 @@ def pipeline(
         if hide:
             code = hide_builtins(code)
         code = harden_literals(code, fragment=mode >= 3)
-        if more:
-            code = spam(code)
+        code = spam(code)
     else:
         code = obf_consts(code)
         code = spam(code)
 
-    if mode >= 3 and more:
-        code = spam(code)
-
-    prefix = ""
-    if importable:
-        code = _restore_annotations(code, annotations)
-        prefix, code = _module_prefix(code)
+    prefix, code = _module_prefix(code, annotations)
     final = (
         prefix
         + "\n"

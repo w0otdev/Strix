@@ -6,7 +6,13 @@ from ctypes import wintypes
 
 
 def native_caption(window, *, background="#202020", foreground="#cccccc"):
-    if sys.platform != "win32" or not window.winfo_ismapped():
+    if sys.platform != "win32":
+        return False
+    try:
+        if not window.winfo_exists() or not window.winfo_ismapped():
+            return False
+        win_id = window.winfo_id()
+    except Exception:  # noqa: BLE001
         return False
     try:
         user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -23,7 +29,7 @@ def native_caption(window, *, background="#202020", foreground="#cccccc"):
     ]
     dwmapi.DwmSetWindowAttribute.restype = ctypes.c_long
     # Tk's client HWND is not the native top-level frame HWND.
-    hwnd = user32.GetAncestor(window.winfo_id(), 2)  # GA_ROOT
+    hwnd = user32.GetAncestor(win_id, 2)  # GA_ROOT
     if not hwnd:
         return False
 

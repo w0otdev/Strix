@@ -21,13 +21,20 @@ if (-not $PythonExe) {
 Push-Location $Root
 try {
     $RunArgs = @($args)
-    $isGui = ($RunArgs.Count -eq 0) -or ($RunArgs -contains "--gui")
+    $hasFile = ($RunArgs -contains "-f") -or ($RunArgs -contains "--file")
+    $hasHelp = ($RunArgs -contains "-h") -or ($RunArgs -contains "--help")
+    $isGui = (($RunArgs.Count -eq 0) -or ($RunArgs -contains "--gui")) -and (-not $hasHelp)
     if ($isGui) {
         $desk = (& $PythonExe -c "import ctypes; u=ctypes.windll.user32; h=u.GetThreadDesktop(ctypes.windll.kernel32.GetCurrentThreadId()); b=ctypes.create_unicode_buffer(256); u.GetUserObjectInformationW(h, 2, b, 512, None); print(b.value)" 2>$null | Out-String).Trim()
         if ($desk -match '^exebox-') {
             Write-Host "[Strix] Terminal nay dang chay trong desktop co lap '$desk' cua IDE (cua so GUI bi an)." -ForegroundColor Yellow
-            Write-Host "[Strix] -> Tu dong chuyen sang che do CLI (--cli). Chay .\script\r.ps1 o PowerShell/Windows Terminal ben ngoai neu muon mo GUI." -ForegroundColor Yellow
-            $RunArgs = @("--cli")
+            if ($hasFile) {
+                $RunArgs = @($RunArgs | Where-Object { $_ -ne "--gui" })
+            }
+            else {
+                Write-Host "[Strix] -> Tu dong chuyen sang che do CLI (--cli). Chay .\script\r.ps1 o PowerShell/Windows Terminal ben ngoai neu muon mo GUI." -ForegroundColor Yellow
+                $RunArgs = @("--cli") + @($RunArgs | Where-Object { $_ -ne "--gui" })
+            }
         }
         else {
             Write-Host "[Strix] Opening GUI from latest source..." -ForegroundColor Cyan

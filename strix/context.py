@@ -4,10 +4,11 @@
 # Modified by w0otdev: Modularized and rebranded under Strix.
 
 import hashlib
-import random
+import secrets
 import sys
 
-sys.setrecursionlimit(1 << 20)
+random = secrets.SystemRandom()
+sys.setrecursionlimit(max(sys.getrecursionlimit(), 5000))
 
 if sys.version_info < (3, 10):  # noqa: UP036 - enforce the minimum version at startup.
     print("STRIX requires Python 3.10+")
@@ -262,27 +263,7 @@ MINERALS = [
 ]
 
 NAME = {}
-
-
-def reset_key():
-    global K
-    K = random.randint(1, 0xFFFFFFFF)
-    return K
-
-
-def rn(k=9):
-    return "_" + "".join(
-        random.choices("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ", k=k)
-    )
-
-
-def QN(key):
-    if key not in NAME:
-        NAME[key] = rn()
-    return NAME[key]
-
-
-for _slot in (
+_SLOTS = (
     "dec",
     "int",
     "float",
@@ -309,12 +290,44 @@ for _slot in (
     "die",
     "len",
     "hl",
-):
+)
+
+
+def rn(k=9):
+    used = set(NAME.values())
+    while True:
+        c = "_" + "".join(
+            random.choices("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ", k=k)
+        )
+        if c not in used:
+            return c
+
+
+def QN(key):
+    if key not in NAME:
+        NAME[key] = rn()
+    return NAME[key]
+
+
+def reset_key():
+    global K
+    K = random.randint(1, 0xFFFFFFFF)
+    NAME.clear()
+    for _slot in _SLOTS:
+        QN(_slot)
+    return K
+
+
+for _slot in _SLOTS:
     QN(_slot)
 
 
 def hz():
-    return "".join(random.choices(HANZI, k=random.randint(7, 9)))
+    used = set(NAME.values())
+    while True:
+        c = "".join(random.choices(HANZI, k=random.randint(7, 9)))
+        if c not in used:
+            return c
 
 
 def mkmarker():
@@ -322,28 +335,20 @@ def mkmarker():
 
 
 def make_ks(data, need):
-    out = b""
-    n = 0
-    while len(out) < need:
-        out += hashlib.sha256(data + n.to_bytes(8, "big")).digest()
-        n += 1
-    return out[:need]
-
-
-def splitnc(data, n):
-    n = max(1, n)
-    q_val, r_val = divmod(len(data), n)
-    parts = []
-    off = 0
-    for i in range(n):
-        s = q_val + (1 if i < r_val else 0)
-        parts.append(data[off : off + s])
-        off += s
-    return parts
+    base = hashlib.sha256(data)
+    out = []
+    for n in range((need + 31) // 32):
+        h = base.copy()
+        h.update(n.to_bytes(8, "big"))
+        out.append(h.digest())
+    return b"".join(out)[:need]
 
 
 def enc_seq(s):
-    return [(ord(c) ^ K) + OFF for c in s]
+    return [
+        ((ord(c) ^ ((K + _i_ * 0x5BD1E995) & 0xFFFFFFFF)) + OFF)
+        for _i_, c in enumerate(s)
+    ]
 
 
 def q(s):
@@ -367,9 +372,11 @@ def F(v):
 
 
 def B(v):
-    if isinstance(v, bytes) and all(32 <= b < 127 for b in v):
+    if not isinstance(v, bytes):
+        return None
+    if all(32 <= b < 127 for b in v):
         return f"{S(v.decode('ascii'))}.encode('ascii')"
-    return None
+    return f"{QN('bytes')}([{', '.join(I(b) for b in v)}])"
 
 
 class MINE:
@@ -403,14 +410,13 @@ def _big():
 
 
 def alias_expr(T):
-    kw = {"T": T}
-    for k in "abcdefg":
-        kw[k] = _big()
-    return random.choice(
+    kw = {k: _big() for k in "abcdefg"}
+    template = random.choice(
         [
-            "({T}) if bool(type(int({a})>int({b})<int({c})>int({d}))) == bool(bool(str({e}) is not str({f}))) and bool(int({g})) < bool(type(None)) else {T}",
-            "({T}) if bool(bool(bool(None))) < bool(type(str({a}))) or bool(int({b})) > bool(bool(str({c}))) else {T}",
-            "({T}) if (bool(type(int({d}))) ^ bool(type(str({e})))) == bool(type(None)) and bool(int({f})) == bool(bool(None)) else {T}",
-            "({T}) if bool(type(int({c}))) <= bool(type(int({d}))) and bool(str({e}) is not str({f})) < bool(type(None)) else {T}",
+            "(__T__) if bool(type(int({a})>int({b})<int({c})>int({d}))) == bool(bool(str({e}) is not str({f}))) and bool(int({g})) < bool(type(None)) else __T__",
+            "(__T__) if bool(bool(bool(None))) < bool(type(str({a}))) or bool(int({b})) > bool(bool(str({c}))) else __T__",
+            "(__T__) if (bool(type(int({d}))) ^ bool(type(str({e})))) == bool(type(None)) and bool(int({f})) == bool(bool(None)) else __T__",
+            "(__T__) if bool(type(int({c}))) <= bool(type(int({d}))) and bool(str({e}) is not str({f})) < bool(type(None)) else __T__",
         ]
-    ).format(**kw)
+    )
+    return template.format(**kw).replace("__T__", T)

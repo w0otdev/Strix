@@ -31,3 +31,4 @@ example/
 strix-*.py
 neo-*.py
 
+/result

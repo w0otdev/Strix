@@ -18,10 +18,18 @@ def system_reduced_motion():
     if override is not None:
         return override.lower() in {"1", "true", "yes"}
     if sys.platform == "win32":
+        from ctypes import wintypes
+
         animations = ctypes.c_int(1)
-        if ctypes.windll.user32.SystemParametersInfoW(
-            0x1042, 0, ctypes.byref(animations), 0
-        ):
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        user32.SystemParametersInfoW.argtypes = [
+            wintypes.UINT,
+            wintypes.UINT,
+            ctypes.c_void_p,
+            wintypes.UINT,
+        ]
+        user32.SystemParametersInfoW.restype = wintypes.BOOL
+        if user32.SystemParametersInfoW(0x1042, 0, ctypes.byref(animations), 0):
             return not bool(animations.value)
     return False
 

@@ -134,16 +134,34 @@ def harden_literals(source: str, *, fragment: bool = False) -> str:
                 node,
             )
 
+        _spec_depth = 0
+
+        def visit_FormattedValue(self, node: ast.FormattedValue):
+            node.value = self.visit(node.value)
+            if node.format_spec is not None:
+                self._spec_depth += 1
+                try:
+                    node.format_spec = self.visit(node.format_spec)
+                finally:
+                    self._spec_depth -= 1
+            return node
+
         def visit_JoinedStr(self, node: ast.JoinedStr):
             # Keep f-string grammar and conversions, including nested format specs.
+            can_wrap = self._spec_depth == 0 or (
+                self._spec_depth == 1
+                and not any(isinstance(v, ast.FormattedValue) for v in node.values)
+            )
             values = []
             for item in node.values:
-                if isinstance(item, ast.Constant):
+                if isinstance(item, ast.Constant) and can_wrap:
                     values.append(
                         ast.FormattedValue(
                             value=self.visit(item), conversion=-1, format_spec=None
                         )
                     )
+                elif isinstance(item, ast.Constant):
+                    values.append(item)
                 else:
                     values.append(self.visit(item))
             node.values = values

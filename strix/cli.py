@@ -4,7 +4,9 @@
 # Modified by w0otdev: Modularized and rebranded under Strix.
 
 import argparse
+import os
 import sys
+import tempfile
 import time
 import tokenize
 import traceback
@@ -102,9 +104,34 @@ def parse_args():
     return p.parse_args()
 
 
+def _write_atomic(source_file, output, content):
+    src_path = Path(source_file).resolve()
+    out_path = Path(output)
+    if out_path.is_symlink():
+        raise ValueError("Refusing to overwrite a symbolic link.")
+    if src_path == out_path.resolve():
+        raise ValueError("Output path must be different from the input source file.")
+    out_dir = out_path.resolve().parent
+    fd, tmp_name = tempfile.mkstemp(prefix=".strix-", suffix=".tmp", dir=str(out_dir))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            f.write(content)
+        os.replace(tmp_name, out_path)
+    except Exception:
+        if os.path.exists(tmp_name):
+            os.unlink(tmp_name)
+        raise
+
+
 def run_headless(
     file, output, mode, protect, hide, more, style="mine", *, importable=False
 ):
+    src_path = Path(file).resolve()
+    out_path = Path(output)
+    if out_path.is_symlink():
+        raise ValueError("Refusing to overwrite a symbolic link.")
+    if src_path == out_path.resolve():
+        raise ValueError("Output path must be different from the input source file.")
     with tokenize.open(file) as f:
         source = f.read()
     log_event(f"Loaded {file} ({len(source)} bytes)")
@@ -117,8 +144,7 @@ def run_headless(
         style=style,
         importable=importable,
     )
-    with open(output, "w", encoding="utf-8", newline="\n") as f:
-        f.write(out)
+    _write_atomic(file, output, out)
     log_ok(f"Saved {output} | engine done.")
 
 
@@ -173,21 +199,19 @@ def main():
     print()
     file = (
         input(stage("Drag file into console then Enter: ", symbol="?"))
-        .replace('"', "")
-        .replace("'", "")
         .strip()
+        .strip("\"'")
     )
     while True:
         try:
-            with open(file, encoding="utf-8-sig") as f:
-                source = f.read()
+            with tokenize.open(file) as f:
+                f.read()
             break
-        except FileNotFoundError:
+        except (OSError, UnicodeError, SyntaxError):
             file = (
                 input(stage("File not found, try again: ", symbol="?"))
-                .replace('"', "")
-                .replace("'", "")
                 .strip()
+                .strip("\"'")
             )
 
     while True:
@@ -198,7 +222,7 @@ def main():
         except ValueError:
             pass
 
-    more = input(stage("More obfuscation? (y/N): ", symbol="?")).strip().upper() == "Y"
+    more = input(stage("More obfuscation? (Y/n): ", symbol="?")).strip().upper() != "N"
     hide = input(stage("Hide builtins? (Y/n): ", symbol="?")).strip().upper() != "N"
     protect = (
         input(stage("Anti-hook / Anti-debug? (Y/n): ", symbol="?")).strip().upper()
@@ -215,10 +239,7 @@ def main():
     log_event("Starting Strix engine...")
     stt = time.time()
     try:
-        out = pipeline(source, mode=mode, protect=protect, hide=hide, more=more)
-        with open(output, "w", encoding="utf-8", newline="\n") as f:
-            f.write(out)
-        log_ok(f"Saved {output}")
+        run_headless(file, output, mode, protect, hide, more)
         log_info(f">>> Done in {time.time() - stt:.3f}s")
     except Exception as e:  # noqa: BLE001 - report failures at the CLI boundary.
         log_warn(f"Engine error: {e}")

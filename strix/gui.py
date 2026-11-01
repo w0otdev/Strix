@@ -600,6 +600,7 @@ class StrixApp:
             self._mode_changed()
             if folder:
                 self.scanning = True
+                self.tree.delete(*self.tree.get_children())
                 self.build_button.configure(state="disabled")
                 self.status.set("Reading project files...")
                 self.file_meta.set("")
@@ -614,13 +615,24 @@ class StrixApp:
                 self._preview_file(path)
                 self.status.set("Ready to obfuscate.")
                 self.build_button.configure(state="normal")
-        except (OSError, UnicodeError, SyntaxError, ValueError) as error:
+            return True
+        except (
+            OSError,
+            UnicodeError,
+            SyntaxError,
+            ValueError,
+            RecursionError,
+            MemoryError,
+        ) as error:
+            self.loaded_path = None
+            self.build_button.configure(state="disabled")
             self._error(str(error))
+            return False
 
     def _scan(self, path, serial):
         try:
             self.events.put(("scan", (serial, path, scan_project(path))))
-        except OSError as error:
+        except (OSError, ValueError) as error:
             self.events.put(("scan_error", (serial, str(error))))
 
     def _show_project(self, path, manifest):
@@ -649,7 +661,14 @@ class StrixApp:
                 self.status.set(
                     "Ready. Folder structure and supporting files will be preserved."
                 )
-            except (OSError, UnicodeError, SyntaxError) as error:
+            except (
+                OSError,
+                UnicodeError,
+                SyntaxError,
+                ValueError,
+                RecursionError,
+                MemoryError,
+            ) as error:
                 self._replace_text(self.preview, str(error))
                 self._error(str(error))
         else:
@@ -666,15 +685,24 @@ class StrixApp:
             if path.is_file():
                 try:
                     self._preview_file(path)
-                except (OSError, UnicodeError, SyntaxError) as error:
+                except (
+                    OSError,
+                    UnicodeError,
+                    SyntaxError,
+                    ValueError,
+                    RecursionError,
+                    MemoryError,
+                ) as error:
                     self._error(str(error))
 
     def _preview_file(self, path):
+        file_size = path.stat().st_size
         with tokenize.open(path) as stream:
-            source = stream.read()
-        ast.parse(source, filename=str(path))
+            source = stream.read(2_000_000)
+        if file_size <= 2_000_000:
+            ast.parse(source, filename=str(path))
         text = source[:40000]
-        if len(source) > 40000:
+        if len(source) > 40000 or file_size > 2_000_000:
             text += "\n\nPreview shortened. The complete file will be compiled."
         self._replace_text(self.preview, text or "Empty Python file")
         if not reduced_motion(self.preview):
@@ -691,7 +719,7 @@ class StrixApp:
         )
         if not self.is_folder:
             self.file_meta.set(
-                f"{len(source.splitlines()):,} lines · {path.stat().st_size:,} bytes"
+                f"{len(source.splitlines()):,} lines · {file_size:,} bytes"
             )
 
     def choose_output(self):
@@ -733,7 +761,8 @@ class StrixApp:
             return
         source = Path(self.source.get().strip().strip('"')).expanduser().resolve()
         if self.loaded_path != source:
-            self.load_source(reset_output=not self.output.get().strip())
+            if not self.load_source(reset_output=not self.output.get().strip()):
+                return
             if self.scanning:
                 return
         try:
@@ -846,7 +875,9 @@ class StrixApp:
                         self.log("Cancelled", "Unfinished build discarded.")
         except queue.Empty:
             pass
-        self._poll_handle = self.root.after(80, self._poll)
+        finally:
+            if self.root.winfo_exists():
+                self._poll_handle = self.root.after(80, self._poll)
 
     def _error(self, message):
         summary = str(message).splitlines()[0]

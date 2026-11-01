@@ -36,8 +36,8 @@ try {
     Write-Host "[2/5] Checking PyInstaller..." -ForegroundColor Cyan
     & $PythonExe -m PyInstaller --version *> $null
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "Installing PyInstaller..." -ForegroundColor Yellow
-        & $PythonExe -m pip install --upgrade pyinstaller
+        Write-Host "Installing PyInstaller (pinned 6.22.3)..." -ForegroundColor Yellow
+        & $PythonExe -m pip install "pyinstaller==6.22.3"
         if ($LASTEXITCODE -ne 0) {
             throw "Failed to install PyInstaller."
         }
@@ -109,6 +109,8 @@ try {
 import os
 import sys
 
+if sys.stdin is None:
+    sys.stdin = open(os.devnull, "r", encoding="utf-8")
 if sys.stdout is None:
     sys.stdout = open(os.devnull, "w", encoding="utf-8")
 if sys.stderr is None:
@@ -117,16 +119,9 @@ if sys.stderr is None:
 
 def _dispatch() -> None:
     args = list(sys.argv[1:])
-    while args and args[0] in ("-u", "-B", "-E", "-s", "-I", "-O", "-OO"):
-        args.pop(0)
-
-    if len(args) >= 2 and args[0] == "-c":
-        code = args[1]
-        sys.argv = ["-c", *args[2:]]
-        exec(code, {"__name__": "__main__"})
-        return
-
-    if len(args) >= 2 and args[0] == "-m" and args[1] in ("strix", "strix.cli"):
+    if args[:3] == ["-u", "-m", "strix"]:
+        sys.argv = [sys.argv[0], *args[3:]]
+    elif args[:2] in (["-m", "strix"], ["-m", "strix.cli"]):
         sys.argv = [sys.argv[0], *args[2:]]
     elif args and os.path.basename(args[0]).lower() in ("strix.py", "strix.pyw"):
         sys.argv = [args[0], *args[1:]]

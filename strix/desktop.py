@@ -3,6 +3,7 @@
 
 """Desktop build jobs. The compiler runs in a separate, cancellable process."""
 
+import concurrent.futures
 import os
 import queue
 import shutil
@@ -52,6 +53,7 @@ def scan_project(source: Path) -> ProjectManifest:
             path = Path(folder) / name
             if (
                 name in IGNORED_FOLDERS
+                or name.startswith(".strix-")
                 or path.is_symlink()
                 or getattr(path, "is_junction", lambda: False)()
             ):
@@ -61,7 +63,11 @@ def scan_project(source: Path) -> ProjectManifest:
         directories[:] = retained
         for name in sorted(names):
             path = Path(folder) / name
-            if path.is_symlink() or path.suffix in {".pyc", ".pyo"}:
+            if (
+                path.is_symlink()
+                or path.suffix in {".pyc", ".pyo"}
+                or not path.is_file()
+            ):
                 skipped += 1
             else:
                 files.append(path.relative_to(source))
@@ -90,7 +96,7 @@ class BuildRequest:
             raise ValueError(
                 "Choose an output path different from the original source."
             )
-        if self.output.exists():
+        if self.output.exists() or self.output.is_symlink():
             raise ValueError("That output already exists. Choose a new file name.")
         if self.source.is_dir() and self.output.resolve().is_relative_to(
             self.source.resolve()
@@ -103,9 +109,10 @@ class BuildRequest:
 
 
 def default_output(source: Path) -> Path:
+    source = source.resolve()
     candidate = source.with_name("strix-" + source.name)
     suffix = 2
-    while candidate.exists():
+    while candidate.exists() or candidate.is_symlink():
         name = (
             f"strix-{source.name}-{suffix}"
             if source.is_dir()
@@ -130,10 +137,8 @@ def _compile(
         "-u",
         "-m",
         "strix",
-        "-f",
-        str(source),
-        "-o",
-        str(staged),
+        f"--file={source.resolve()}",
+        f"--output={staged.resolve()}",
         "-m",
         str(request.mode),
         "--style",
@@ -206,9 +211,10 @@ def run_build(request: BuildRequest, events: queue.Queue, cancel: threading.Even
                 staged.mkdir()
                 for relative in manifest.directories:
                     (staged / relative).mkdir(parents=True, exist_ok=True)
-                for index, relative in enumerate(manifest.files):
+
+                def _stage_file(relative: Path) -> Path | None:
                     if cancel.is_set():
-                        break
+                        return None
                     target = staged / relative
                     target.parent.mkdir(parents=True, exist_ok=True)
                     if relative.suffix.lower() in PYTHON_SUFFIXES:
@@ -220,16 +226,48 @@ def run_build(request: BuildRequest, events: queue.Queue, cancel: threading.Even
                             cancel,
                             importable=True,
                         ):
-                            break
+                            return None
                     else:
-                        shutil.copy2(request.source / relative, target)
-                    events.put(
-                        ("progress", (index + 1, len(manifest.files), str(relative)))
-                    )
+                        src_item = request.source / relative
+                        if src_item.is_symlink():
+                            return None
+                        shutil.copy2(src_item, target, follow_symlinks=False)
+                    return relative
+
+                total = len(manifest.files)
+                done = 0
+                if len(manifest.python_files) > 1:
+                    workers = min(len(manifest.python_files), os.cpu_count() or 4)
+                    with concurrent.futures.ThreadPoolExecutor(
+                        max_workers=workers
+                    ) as pool:
+                        futures = [
+                            pool.submit(_stage_file, rel) for rel in manifest.files
+                        ]
+                        for future in concurrent.futures.as_completed(futures):
+                            if cancel.is_set():
+                                pool.shutdown(wait=False, cancel_futures=True)
+                                break
+                            try:
+                                finished = future.result()
+                            except Exception:
+                                pool.shutdown(wait=False, cancel_futures=True)
+                                raise
+                            if finished is not None and not cancel.is_set():
+                                done += 1
+                                events.put(("progress", (done, total, str(finished))))
+                else:
+                    for relative in manifest.files:
+                        if cancel.is_set():
+                            break
+                        finished = _stage_file(relative)
+                        if finished is not None and not cancel.is_set():
+                            done += 1
+                            events.put(("progress", (done, total, str(finished))))
                 if cancel.is_set():
                     events.put(("cancelled", None))
                     return
-                if request.output.exists():
+                if request.output.exists() or request.output.is_symlink():
                     raise ValueError(
                         "The output folder was created by another operation. Choose a new path."
                     )

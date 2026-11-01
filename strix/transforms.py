@@ -36,7 +36,16 @@ def anti_pycdc_block():
 def clean_try_except(source):
     try:
         t = ast.parse(source)
-        body = t.body
+        prefix = []
+        if ast.get_docstring(t) is not None:
+            prefix.append(t.body.pop(0))
+        while (
+            t.body
+            and isinstance(t.body[0], ast.ImportFrom)
+            and t.body[0].module == "__future__"
+        ):
+            prefix.append(t.body.pop(0))
+        body = t.body or [ast.Pass()]
         try_except = ast.Try(
             body=body,
             handlers=[
@@ -51,33 +60,21 @@ def clean_try_except(source):
                                 keywords=[],
                             )
                         ),
-                        ast.Expr(
-                            ast.Call(
-                                func=ast.Name(id="exit", ctx=ast.Load()),
-                                args=[],
+                        ast.Raise(
+                            exc=ast.Call(
+                                func=ast.Name(id="SystemExit", ctx=ast.Load()),
+                                args=[ast.Constant(value=0)],
                                 keywords=[],
-                            )
+                            ),
+                            cause=None,
                         ),
-                    ],
-                ),
-                ast.ExceptHandler(
-                    type=ast.Name(id="Exception", ctx=ast.Load()),
-                    name="e",
-                    body=[
-                        ast.Expr(
-                            ast.Call(
-                                func=ast.Name(id="print", ctx=ast.Load()),
-                                args=[ast.Name(id="e", ctx=ast.Load())],
-                                keywords=[],
-                            )
-                        )
                     ],
                 ),
             ],
             orelse=[],
             finalbody=[],
         )
-        m = ast.Module(body=[try_except], type_ignores=[])
+        m = ast.Module(body=[*prefix, try_except], type_ignores=[])
         ast.fix_missing_locations(m)
         return ast.unparse(m)
     except SyntaxError:
@@ -93,7 +90,7 @@ def joinstr(f):
             if isinstance(i.value, str):
                 vl.append(i)
             else:
-                vl.append(str(i.value))
+                vl.append(ast.Constant(value=str(i.value)))
         elif isinstance(i, ast.FormattedValue):
             value_expr = i.value
             if i.conversion == 115:
@@ -163,15 +160,16 @@ def obf_vars(source):
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            module_names.add(node.names[0].name.split(".")[0])
-            if node.names[0].asname:
-                declared.add(node.names[0].asname)
+            for a in node.names:
+                module_names.add(a.name.split(".")[0])
+                if a.asname:
+                    module_names.add(a.asname)
         elif isinstance(node, ast.ImportFrom):
             if node.module:
                 module_names.add(node.module.split(".")[0])
             for a in node.names:
                 if a.asname:
-                    declared.add(a.asname)
+                    module_names.add(a.asname)
                 else:
                     module_names.add(a.name)
         elif isinstance(node, ast.Attribute):
@@ -191,12 +189,28 @@ def obf_vars(source):
         elif isinstance(node, ast.ExceptHandler):
             if node.name:
                 declared.add(node.name)
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)):
+            if node.name:
+                declared.add(node.name)
+        elif isinstance(node, ast.MatchMapping):
+            if node.rest:
+                declared.add(node.rest)
 
     for parent in ast.walk(tree):
         if isinstance(parent, ast.ClassDef):
             for sub in parent.body:
-                if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if isinstance(
+                    sub, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+                ):
                     method_names.add(sub.name)
+                elif isinstance(sub, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+                    targets = (
+                        sub.targets if isinstance(sub, ast.Assign) else [sub.target]
+                    )
+                    for t in targets:
+                        for n in ast.walk(t):
+                            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
+                                method_names.add(n.id)
 
     not_rename = attr_names | kwarg_names | method_names
     aliases = {}
@@ -246,6 +260,29 @@ def obf_vars(source):
             node.names = [aliases.get(x, x) for x in node.names]
             return node
 
+        def visit_ExceptHandler(self, node):
+            if node.name and node.name in aliases:
+                node.name = aliases[node.name]
+            self.generic_visit(node)
+            return node
+
+        def visit_MatchAs(self, node):
+            if node.name and node.name in aliases:
+                node.name = aliases[node.name]
+            self.generic_visit(node)
+            return node
+
+        def visit_MatchStar(self, node):
+            if node.name and node.name in aliases:
+                node.name = aliases[node.name]
+            return node
+
+        def visit_MatchMapping(self, node):
+            if node.rest and node.rest in aliases:
+                node.rest = aliases[node.rest]
+            self.generic_visit(node)
+            return node
+
     tree = Ren().visit(tree)
     ast.fix_missing_locations(tree)
     return ast.unparse(tree)
@@ -278,6 +315,11 @@ def hide_builtins(source):
             bound.add(node.rest)
 
     class Hide(ast.NodeTransformer):
+        def visit_MatchClass(self, node):
+            node.patterns = [self.visit(p) for p in node.patterns]
+            node.kwd_patterns = [self.visit(p) for p in node.kwd_patterns]
+            return node
+
         def visit_Name(self, node):
             if (
                 isinstance(node.ctx, ast.Load)
@@ -332,166 +374,6 @@ def obf_consts(source):
     tree = Constants().visit(tree)
     ast.fix_missing_locations(tree)
     return ast.unparse(tree)
-
-
-def gen_jcode(code):
-    men = hz()
-    bao = hz()
-    qua = hz()
-    return [
-        ast.Assign(
-            targets=[ast.Name(id=bao, ctx=ast.Store())], value=ast.Constant(value=men)
-        ),
-        ast.Assign(
-            targets=[ast.Name(id=qua, ctx=ast.Store())], value=ast.Constant(value=True)
-        ),
-        ast.If(
-            test=ast.BoolOp(
-                op=ast.And(),
-                values=[
-                    ast.Compare(
-                        left=ast.Name(id=bao, ctx=ast.Load()),
-                        ops=[ast.Eq()],
-                        comparators=[ast.Constant(value=men)],
-                    ),
-                    ast.Compare(
-                        left=ast.Name(id=qua, ctx=ast.Load()),
-                        ops=[ast.NotEq()],
-                        comparators=[ast.Constant(value=True)],
-                    ),
-                ],
-            ),
-            body=[
-                ast.Expr(
-                    value=ast.Lambda(
-                        args=ast.arguments(
-                            posonlyargs=[],
-                            args=[],
-                            kwonlyargs=[],
-                            kw_defaults=[],
-                            defaults=[],
-                        ),
-                        body=ast.parse(S("灵魂暗影"), mode="eval").body,
-                    )
-                )
-            ],
-            orelse=[
-                ast.If(
-                    test=ast.BoolOp(
-                        op=ast.And(),
-                        values=[
-                            ast.Compare(
-                                left=ast.Name(id=bao, ctx=ast.Load()),
-                                ops=[ast.Eq()],
-                                comparators=[ast.Constant(value=men)],
-                            ),
-                            ast.Compare(
-                                left=ast.Name(id=qua, ctx=ast.Load()),
-                                ops=[ast.NotEq()],
-                                comparators=[ast.Constant(value=False)],
-                            ),
-                        ],
-                    ),
-                    body=[
-                        ast.Try(
-                            body=[
-                                ast.Expr(
-                                    value=ast.Tuple(
-                                        elts=[
-                                            ast.BinOp(
-                                                left=ast.Constant(value=1),
-                                                op=ast.Div(),
-                                                right=ast.Constant(value=0),
-                                            ),
-                                            ast.BinOp(
-                                                left=ast.Constant(value=123),
-                                                op=ast.Div(),
-                                                right=ast.Constant(value=0),
-                                            ),
-                                            ast.BinOp(
-                                                left=ast.Constant(value=12312321312),
-                                                op=ast.Div(),
-                                                right=ast.Constant(value=0),
-                                            ),
-                                        ],
-                                        ctx=ast.Load(),
-                                    )
-                                )
-                            ],
-                            handlers=[ast.ExceptHandler(body=[code])],
-                            orelse=[],
-                            finalbody=[],
-                        )
-                    ],
-                    orelse=[
-                        ast.If(
-                            test=ast.BoolOp(
-                                op=ast.Or(),
-                                values=[
-                                    ast.Compare(
-                                        left=ast.Name(id=bao, ctx=ast.Load()),
-                                        ops=[ast.Eq()],
-                                        comparators=[
-                                            ast.parse(S("废墟"), mode="eval").body
-                                        ],
-                                    ),
-                                    ast.Compare(
-                                        left=ast.Name(id=qua, ctx=ast.Load()),
-                                        ops=[ast.Eq()],
-                                        comparators=[ast.Constant(value=False)],
-                                    ),
-                                ],
-                            ),
-                            body=[
-                                ast.Expr(
-                                    value=ast.Call(
-                                        func=ast.Lambda(
-                                            args=ast.arguments(
-                                                posonlyargs=[],
-                                                args=[],
-                                                kwonlyargs=[],
-                                                kw_defaults=[],
-                                                defaults=[],
-                                            ),
-                                            body=ast.Call(
-                                                func=ast.Name(
-                                                    id="print", ctx=ast.Load()
-                                                ),
-                                                args=[
-                                                    ast.parse(
-                                                        S("虚空回响"), mode="eval"
-                                                    ).body
-                                                ],
-                                                keywords=[],
-                                            ),
-                                        ),
-                                        args=[],
-                                        keywords=[],
-                                    )
-                                )
-                            ],
-                            orelse=[
-                                ast.While(
-                                    test=ast.Constant(value=True),
-                                    body=[ast.Pass()],
-                                    orelse=[],
-                                ),
-                                ast.Expr(
-                                    value=ast.Call(
-                                        func=ast.Name(id="print", ctx=ast.Load()),
-                                        args=[
-                                            ast.parse(S("数字洪流"), mode="eval").body
-                                        ],
-                                        keywords=[],
-                                    )
-                                ),
-                            ],
-                        )
-                    ],
-                )
-            ],
-        ),
-    ]
 
 
 def junk_cases(en, max_value):
@@ -588,59 +470,7 @@ def _bl(node):
     ):
         docstring = [olb[0]]
         olb = olb[1:]
-    var = hz()
-    en = hz()
-    tb = [
-        ast.AugAssign(
-            target=ast.Name(id=var, ctx=ast.Store()),
-            op=ast.Add(),
-            value=ast.parse(I_(1), mode="eval").body,
-        ),
-        ast.Try(
-            body=[
-                ast.Raise(
-                    exc=ast.Call(
-                        func=ast.Name(id="MemoryError", ctx=ast.Load()),
-                        args=[ast.Name(id=var, ctx=ast.Load())],
-                        keywords=[],
-                    )
-                )
-            ],
-            handlers=[
-                ast.ExceptHandler(
-                    type=ast.Name(id="MemoryError", ctx=ast.Load()), name=en, body=[]
-                )
-            ],
-            orelse=[],
-            finalbody=[],
-        ),
-    ]
-    for i in olb:
-        tb[1].handlers[0].body.append(
-            ast.If(
-                test=ast.Compare(
-                    left=ast.Subscript(
-                        value=ast.Attribute(
-                            value=ast.Name(id=en, ctx=ast.Load()), attr="args"
-                        ),
-                        slice=ast.Constant(value=0),
-                    ),
-                    ops=[ast.Eq()],
-                    comparators=[ast.parse(I_(1), mode="eval").body],
-                ),
-                body=[i],
-                orelse=[],
-            )
-        )
-    tb[1].handlers[0].body.extend(junk_cases(en, len(olb) + 1))
-    node.body = [
-        *docstring,
-        ast.Assign(
-            targets=[ast.Name(id=var, ctx=ast.Store())],
-            value=ast.parse(I_(0), mode="eval").body,
-        ),
-        *tb,
-    ]
+    node.body = [*docstring, *bl(olb)]
     return node
 
 
@@ -657,25 +487,10 @@ def process_block(block):
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             nb.append(_bl(node))
         elif isinstance(node, ast.ClassDef):
-            inner = []
-            for index, m in enumerate(node.body):
-                if (
-                    index == 0
-                    and isinstance(m, ast.Expr)
-                    and isinstance(m.value, ast.Constant)
-                    and isinstance(m.value.value, str)
-                ):
-                    inner.append(m)
-                    continue
-                if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    inner.append(_bl(m))
-                elif isinstance(
-                    m, (ast.Assign, ast.AugAssign, ast.AnnAssign, ast.Expr)
-                ):
-                    inner.extend(bl([m]))
-                else:
-                    inner.append(m)
-            node.body = inner
+            node.body = [
+                _bl(m) if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)) else m
+                for m in node.body
+            ]
             nb.append(node)
         elif isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign, ast.Expr)):
             nb.extend(bl([node]))
