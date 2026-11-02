@@ -26,7 +26,14 @@ from .motion import (
     set_reduced_motion,
     system_reduced_motion,
 )
-from .windowing import install_native_caption
+from .windowing import (
+    drag_window,
+    install_native_caption,
+    is_window_maximized,
+    minimize_window,
+    move_window_drag,
+    toggle_maximize_window,
+)
 
 PALETTE = {
     "background": "#202020",
@@ -124,8 +131,10 @@ class Switch(tk.Frame):
         self.variable.set(not self.variable.get())
 
     def refresh(self, *_args):
-        self.button.primary = self.variable.get()
-        self.button.configure(text="On" if self.variable.get() else "Off")
+        disabled = self.button.cget("state") == "disabled"
+        active = bool(self.variable.get()) and not disabled
+        self.button.primary = active
+        self.button.configure(text="On" if active else "Off")
         self.button._leave()
 
 
@@ -155,6 +164,8 @@ class StrixApp:
         self.scan_serial = 0
         self.is_folder = False
         self.saved_guards = protect
+        self.saved_importable = False
+        self._syncing_toggles = False
         self.started = 0.0
         self.last_output = None
         self.loaded_path = None
@@ -168,6 +179,15 @@ class StrixApp:
         self.protect = tk.BooleanVar(root, protect)
         self.hide = tk.BooleanVar(root, hide)
         self.more = tk.BooleanVar(root, more)
+        self.importable = tk.BooleanVar(root, False)
+        self.cff = tk.BooleanVar(root, True)
+        self.junk = tk.BooleanVar(root, True)
+        self.py_lock = tk.BooleanVar(root, True)
+        self.hw_bind = tk.BooleanVar(root, False)
+        self.anti_debug = tk.BooleanVar(root, True)
+        self.anti_hook = tk.BooleanVar(root, True)
+        self.anti_vm = tk.BooleanVar(root, True)
+        self.anti_pydc = tk.BooleanVar(root, True)
         self.status = tk.StringVar(root, "Choose a file or a project folder.")
         self.file_meta = tk.StringVar(root)
         self.output_label = tk.StringVar(root, "Output file")
@@ -180,9 +200,15 @@ class StrixApp:
         self.root.tk.eval("proc bell {args} {}")
         self._theme()
         self._layout()
-        self.mode.trace_add("write", self._mode_changed)
+        self.mode.trace_add("write", self._on_mode_or_more_toggle)
         self.style.trace_add("write", self._mode_changed)
-        self.more.trace_add("write", self._mode_changed)
+        self.more.trace_add("write", self._on_mode_or_more_toggle)
+        self.protect.trace_add("write", self._on_protect_toggle)
+        self.importable.trace_add("write", self._on_importable_toggle)
+        for guard_var in (self.anti_debug, self.anti_hook, self.anti_vm, self.anti_pydc):
+            guard_var.trace_add("write", self._on_subguard_toggle)
+        for pass_var in (self.cff, self.junk):
+            pass_var.trace_add("write", self._on_pass_toggle)
         self._mode_changed()
         self._resize_pending = None
         self._compact = None
@@ -280,27 +306,100 @@ class StrixApp:
             **options,
         )
 
+    def _window_button(self, parent, symbol, command, *, close_btn=False):
+        btn = tk.Button(
+            parent,
+            text=symbol,
+            command=command,
+            relief="flat",
+            borderwidth=0,
+            bg=PALETTE["background"],
+            fg=PALETTE["text"],
+            activebackground="#c42b1c" if close_btn else PALETTE["line"],
+            activeforeground="#ffffff" if close_btn else PALETTE["text"],
+            highlightthickness=0,
+            font=(SANS, 10),
+            cursor="hand2",
+            width=4,
+            pady=6,
+            takefocus=False,
+        )
+        hover_bg = "#c42b1c" if close_btn else PALETTE["panel"]
+        hover_fg = "#ffffff" if close_btn else PALETTE["text"]
+        btn.bind("<Enter>", lambda _e: btn.configure(bg=hover_bg, fg=hover_fg))
+        btn.bind(
+            "<Leave>",
+            lambda _e: btn.configure(bg=PALETTE["background"], fg=PALETTE["text"]),
+        )
+        return btn
+
+    def _toggle_maximize(self, _event=None):
+        maximized = toggle_maximize_window(self.root)
+        if hasattr(self, "max_button"):
+            self.max_button.configure(text="❐" if maximized else "□")
+
     def _layout(self):
         shell = tk.Frame(self.root, bg=PALETTE["background"])
-        shell.pack(fill="both", expand=True, padx=24, pady=18)
+        shell.pack(fill="both", expand=True, padx=24, pady=(12, 18))
         shell.columnconfigure(0, weight=1)
         shell.rowconfigure(2, weight=1)
         toolbar = tk.Frame(shell, bg=PALETTE["background"])
         toolbar.grid(row=0, column=0, sticky="ew", pady=(0, 18))
-        asset = ROOT / "assets" / "strix-logo-transparent.png"
+        brand = tk.Frame(toolbar, bg=PALETTE["background"])
+        brand.pack(side="left")
+        ui_asset = ROOT / "assets" / "strix-logo-ui.png"
+        asset = ui_asset if ui_asset.is_file() else ROOT / "assets" / "strix-logo-transparent.png"
         if asset.is_file():
             self.logo = tk.PhotoImage(file=str(asset))
             self.logo_small = self.logo.subsample(
                 max(1, (max(self.logo.width(), self.logo.height()) + 55) // 56)
             )
-            tk.Label(
-                toolbar, image=self.logo_small, bg=PALETTE["background"], borderwidth=0
-            ).pack(side="left")
+            logo_label = tk.Label(
+                brand, image=self.logo_small, bg=PALETTE["background"], borderwidth=0
+            )
+            logo_label.pack(side="left", padx=(0, 10))
             self.root.iconphoto(True, self.logo_small)
         else:
-            label(toolbar, "STRIX", size=22).pack(side="left")
+            logo_label = None
+        brand_title = tk.Label(
+            brand,
+            text="STRIX",
+            bg=PALETTE["background"],
+            fg=PALETTE["text"],
+            font=(SANS, 18, "bold"),
+            anchor="w",
+        )
+        brand_title.pack(side="left")
+
+        win_controls = tk.Frame(toolbar, bg=PALETTE["background"])
+        win_controls.pack(side="right", padx=(14, 0))
+        self.min_button = self._window_button(
+            win_controls, "—", lambda: minimize_window(self.root)
+        )
+        self.min_button.pack(side="left")
+        self.max_button = self._window_button(
+            win_controls,
+            "❐" if is_window_maximized(self.root) else "□",
+            self._toggle_maximize,
+        )
+        self.max_button.pack(side="left")
+        self.close_button = self._window_button(
+            win_controls, "✕", self.close, close_btn=True
+        )
+        self.close_button.pack(side="left")
+
         Action(toolbar, "Help", self.show_help).pack(side="right")
         Action(toolbar, "Build log", self.show_log).pack(side="right", padx=(0, 8))
+
+        for drag_target in (toolbar, brand, brand_title, logo_label):
+            if drag_target is not None:
+                drag_target.bind(
+                    "<ButtonPress-1>", lambda e: drag_window(self.root, e)
+                )
+                drag_target.bind(
+                    "<B1-Motion>", lambda e: move_window_drag(self.root, e)
+                )
+                drag_target.bind("<Double-Button-1>", self._toggle_maximize)
 
         source = tk.Frame(shell, bg=PALETTE["background"])
         source.grid(row=1, column=0, sticky="ew", pady=(0, 16))
@@ -457,6 +556,15 @@ class StrixApp:
             ("Runtime guards", self.protect),
             ("Hide builtins", self.hide),
             ("Extra obfuscation", self.more),
+            ("Importable API", self.importable),
+            ("Flatten flow", self.cff),
+            ("Junk functions", self.junk),
+            ("Python lock", self.py_lock),
+            ("Hardware bind", self.hw_bind),
+            ("Anti-debug", self.anti_debug),
+            ("Anti-hook", self.anti_hook),
+            ("Anti-VM & proxy", self.anti_vm),
+            ("Anti-decompile", self.anti_pydc),
         ):
             self.switches.append(Switch(self.toggle_group, title, variable))
 
@@ -472,13 +580,13 @@ class StrixApp:
         compact = self.root.winfo_width() < 1000
         if compact != self._compact:
             self._compact = compact
-            self.workspace.columnconfigure(1, minsize=0 if compact else 276)
+            self.workspace.columnconfigure(1, minsize=0 if compact else 348)
             self.content.grid_configure(padx=(0, 0 if compact else 20))
             self.profile.grid(
                 row=1 if compact else 0,
                 column=0 if compact else 1,
                 sticky="ew" if compact else "new",
-                pady=(12, 0) if compact else 0,
+                pady=(10, 0) if compact else 0,
             )
             self.profile.columnconfigure(0, weight=1)
             self.profile.columnconfigure(1, weight=1 if compact else 0)
@@ -489,25 +597,30 @@ class StrixApp:
                 row=0 if compact else 1,
                 column=1 if compact else 0,
                 sticky="new",
-                pady=0 if compact else (12, 12),
+                pady=0 if compact else (10, 10),
             )
             self.toggle_group.grid(
                 row=1 if compact else 2,
                 column=0,
                 columnspan=2 if compact else 1,
                 sticky="ew",
-                pady=(8, 0) if compact else 0,
+                pady=(6, 0) if compact else 0,
             )
-            for index, switch in enumerate(self.switches):
+            cols = 4 if compact else 2
+            for col in range(4):
                 self.toggle_group.columnconfigure(
-                    index, weight=1 if compact or index == 0 else 0
+                    col,
+                    weight=1 if col < cols else 0,
+                    uniform="sw" if col < cols else "",
                 )
+            for index, switch in enumerate(self.switches):
+                row, col = divmod(index, cols)
                 switch.grid(
-                    row=0 if compact else index,
-                    column=index if compact else 0,
+                    row=row,
+                    column=col,
                     sticky="ew",
-                    pady=4,
-                    padx=(0, 14) if compact and index < 2 else 0,
+                    pady=2,
+                    padx=(0, 10) if col < cols - 1 else 0,
                 )
             self.tree.column("#0", width=150 if compact else 180)
         self.root.after_idle(self._wrap_text)
@@ -534,6 +647,111 @@ class StrixApp:
             self.preview.configure(
                 fg=PALETTE["text"], highlightbackground=PALETTE["line"]
             )
+
+    def _on_mode_or_more_toggle(self, *_args):
+        if not self._syncing_toggles:
+            self._syncing_toggles = True
+            try:
+                enable_passes = (
+                    self.mode.get() >= 2
+                    and self.more.get()
+                    and not self.importable.get()
+                )
+                self.cff.set(enable_passes)
+                self.junk.set(enable_passes)
+            finally:
+                self._syncing_toggles = False
+        self._mode_changed()
+
+    def _on_pass_toggle(self, *_args):
+        if self._syncing_toggles:
+            return
+        self._syncing_toggles = True
+        try:
+            if self.cff.get() or self.junk.get():
+                if self.mode.get() < 2:
+                    self.mode.set(2)
+                if not self.more.get():
+                    self.more.set(True)
+                if self.importable.get() and not self.is_folder:
+                    self.importable.set(False)
+        finally:
+            self._syncing_toggles = False
+        self._mode_changed()
+
+    def _on_protect_toggle(self, *_args):
+        if not self._syncing_toggles:
+            self._syncing_toggles = True
+            try:
+                on = self.protect.get()
+                if on and self.importable.get() and not self.is_folder:
+                    self.importable.set(False)
+                for guard_var in (
+                    self.anti_debug,
+                    self.anti_hook,
+                    self.anti_vm,
+                    self.anti_pydc,
+                ):
+                    guard_var.set(on)
+            finally:
+                self._syncing_toggles = False
+        self._mode_changed()
+
+    def _on_importable_toggle(self, *_args):
+        if not self._syncing_toggles:
+            self._syncing_toggles = True
+            try:
+                if self.importable.get():
+                    self.protect.set(False)
+                    for guard_var in (
+                        self.anti_debug,
+                        self.anti_hook,
+                        self.anti_vm,
+                        self.anti_pydc,
+                    ):
+                        guard_var.set(False)
+                    self.cff.set(False)
+                    self.junk.set(False)
+                elif not self.is_folder:
+                    self.protect.set(True)
+                    for guard_var in (
+                        self.anti_debug,
+                        self.anti_hook,
+                        self.anti_vm,
+                        self.anti_pydc,
+                    ):
+                        guard_var.set(True)
+                    if self.mode.get() >= 2 and self.more.get():
+                        self.cff.set(True)
+                        self.junk.set(True)
+            finally:
+                self._syncing_toggles = False
+        self._mode_changed()
+
+    def _on_subguard_toggle(self, *_args):
+        if self._syncing_toggles:
+            return
+        self._syncing_toggles = True
+        try:
+            any_on = any(
+                v.get()
+                for v in (
+                    self.anti_debug,
+                    self.anti_hook,
+                    self.anti_vm,
+                    self.anti_pydc,
+                )
+            )
+            if any_on:
+                if self.importable.get() and not self.is_folder:
+                    self.importable.set(False)
+                if not self.protect.get():
+                    self.protect.set(True)
+            elif self.protect.get():
+                self.protect.set(False)
+        finally:
+            self._syncing_toggles = False
+        self._mode_changed()
 
     def _mode_changed(self, *_args):
         language = (
@@ -580,6 +798,7 @@ class StrixApp:
         for button, value in self.style_buttons:
             button.primary = value == self.style.get()
             button._leave()
+        self._sync_language_controls()
 
     def choose_source(self):
         if self.busy:
@@ -616,17 +835,18 @@ class StrixApp:
             if folder != self.is_folder:
                 if folder:
                     self.saved_guards = self.protect.get()
+                    self.saved_importable = self.importable.get()
                     self.protect.set(False)
+                    self.importable.set(True)
                 else:
                     self.protect.set(self.saved_guards)
+                    self.importable.set(self.saved_importable)
             self.is_folder = folder
             self.loaded_path = path
             self.source.set(str(path))
             if reset_output:
                 self.output.set(str(default_output(path)))
             self.output_label.set("Output folder" if folder else "Output file")
-            self.switches[0].button.configure(state="disabled" if folder else "normal")
-            self.switches[0].button.sync()
             self._mode_changed()
             self._sync_language_controls()
             if folder:
@@ -811,6 +1031,19 @@ class StrixApp:
                 self.protect.get(),
                 self.hide.get(),
                 self.more.get(),
+                hw_bind=self.hw_bind.get(),
+                py_lock=self.py_lock.get(),
+                importable=self.importable.get(),
+                junk=self.junk.get(),
+                cff=self.cff.get(),
+                anti_debug=self.anti_debug.get(),
+                anti_hook=self.anti_hook.get(),
+                anti_frame=self.anti_pydc.get(),
+                anti_vm=self.anti_vm.get(),
+                anti_proxy=self.anti_vm.get(),
+                anti_httptoolkit=self.anti_vm.get(),
+                anti_pydc=self.anti_pydc.get(),
+                anti_crack=self.anti_pydc.get(),
             )
             request.validate()
         except (OSError, ValueError) as error:
@@ -853,17 +1086,18 @@ class StrixApp:
         self.cancel_button.sync()
 
     def _sync_language_controls(self):
+        if not hasattr(self, "switches") or len(self.switches) < 12:
+            return
         python = (
             self.is_folder
             or self.loaded_path is None
             or self.loaded_path.suffix.lower() in PYTHON_SUFFIXES
         )
-        for index in (0, 1):
-            disabled = self.busy or not python or (index == 0 and self.is_folder)
-            self.switches[index].button.configure(
-                state="disabled" if disabled else "normal"
-            )
-            self.switches[index].button.sync()
+        for index, switch in enumerate(self.switches):
+            active = True if index == 2 else (python and not (index in (0, 3) and self.is_folder))
+            disabled = self.busy or not active
+            switch.button.configure(state="disabled" if disabled else "normal")
+            switch.refresh()
         for button, _ in self.style_buttons:
             button.configure(state="normal" if python and not self.busy else "disabled")
             button.sync()

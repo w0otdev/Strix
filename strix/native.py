@@ -216,6 +216,54 @@ def _encode_c_string(spelling, mode):
     return " ".join(prefix + '"' + chunk + '"' for chunk in chunks)
 
 
+_CLANG_LIB_DIR: str | None = None
+
+
+def _resolve_libclang(cindex) -> None:
+    # shortcut: ultra-light builds omit bundled libclang.dll (~80 MB) and resolve it from host LLVM/Python; pass -IncludeNativeClang in b.ps1 for offline air-gapped C/C++ builds.
+    global _CLANG_LIB_DIR
+    if cindex.Config.loaded:
+        return
+    env_path = os.environ.get("LIBCLANG_PATH")
+    if env_path:
+        cindex.Config.set_library_path(env_path)
+        return
+    bundled = Path(cindex.__file__).resolve().parent / "native"
+    if bundled.is_dir():
+        return
+    if _CLANG_LIB_DIR is None:
+        candidates = []
+        for tool in ("libclang.dll", "clang", "clang++"):
+            hit = shutil.which(tool)
+            if hit:
+                candidates.append(Path(hit).resolve().parent)
+        if sys.platform == "win32":
+            for env_var in ("ProgramFiles", "ProgramFiles(x86)"):
+                root = os.environ.get(env_var)
+                if root:
+                    candidates.append(Path(root) / "LLVM" / "bin")
+        py = shutil.which("python") or shutil.which("python3")
+        if py:
+            try:
+                out = _run(
+                    [
+                        py,
+                        "-c",
+                        "import clang.cindex, pathlib; print(pathlib.Path(clang.cindex.__file__).resolve().parent / 'native')",
+                    ]
+                ).strip()
+                if out:
+                    candidates.append(Path(out))
+            except ValueError:
+                pass
+        _CLANG_LIB_DIR = next(
+            (str(d) for d in candidates if d.is_dir() and any(d.glob("*libclang*"))),
+            "",
+        )
+    if _CLANG_LIB_DIR:
+        cindex.Config.set_library_path(_CLANG_LIB_DIR)
+
+
 def obfuscate_c(path: Path, *, mode=2, more=True):
     try:
         cindex = importlib.import_module("clang.cindex")
@@ -223,8 +271,7 @@ def obfuscate_c(path: Path, *, mode=2, more=True):
         raise ValueError(
             "C/C++ requires: python -m pip install -r requirements-native.txt"
         ) from error
-    if os.environ.get("LIBCLANG_PATH") and not cindex.Config.loaded:
-        cindex.Config.set_library_path(os.environ["LIBCLANG_PATH"])
+    _resolve_libclang(cindex)
     path = path.resolve()
     data = path.read_bytes()
     data.decode("utf-8-sig")  # Fail on unsupported encodings before writing any output.

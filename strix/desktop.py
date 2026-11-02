@@ -103,6 +103,17 @@ class BuildRequest:
     more: bool = True
     hw_bind: bool = False
     py_lock: bool = True
+    importable: bool = False
+    junk: bool = True
+    cff: bool = True
+    anti_debug: bool = True
+    anti_hook: bool = True
+    anti_frame: bool = True
+    anti_vm: bool = True
+    anti_proxy: bool = True
+    anti_httptoolkit: bool = True
+    anti_pydc: bool = True
+    anti_crack: bool = True
 
     def validate(self):
         if not self.source.is_file() and not self.source.is_dir():
@@ -215,7 +226,7 @@ def _compile(
         "--style",
         request.style,
     ]
-    if importable:
+    if importable or request.importable:
         command.append("--importable")
     if request.hw_bind:
         command.append("--hw-bind")
@@ -224,6 +235,16 @@ def _compile(
         (request.hide, "--no-hide"),
         (request.more, "--no-more"),
         (request.py_lock, "--no-py-lock"),
+        (request.junk, "--no-junk"),
+        (request.cff, "--no-cff"),
+        (request.anti_debug, "--no-anti-debug"),
+        (request.anti_hook, "--no-anti-hook"),
+        (request.anti_frame, "--no-anti-frame"),
+        (request.anti_vm, "--no-anti-vm"),
+        (request.anti_proxy, "--no-anti-proxy"),
+        (request.anti_httptoolkit, "--no-anti-httptoolkit"),
+        (request.anti_pydc, "--no-anti-pydc"),
+        (request.anti_crack, "--no-anti-crack"),
     ):
         if not enabled:
             command.append(flag)
